@@ -7,7 +7,6 @@ import { useFonts } from "expo-font";
 import { Stack } from "expo-router";
 import { useEffect } from "react";
 import { Text, TextInput } from "react-native";
-import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import "../global.css";
 
 export default function RootLayout() {
@@ -38,11 +37,5 @@ export default function RootLayout() {
 
   if (!fontsLoaded) return null;
 
-  return (
-    <SafeAreaProvider>
-      <SafeAreaView style={{ flex: 1 }} edges={["top", "bottom"]}>
-        <Stack />
-      </SafeAreaView>
-    </SafeAreaProvider>
-  );
+  return <Stack />;
 }

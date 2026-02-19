@@ -7,7 +7,6 @@ import {
     TouchableOpacity,
     View,
 } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Button from "../ui/Button";
 import LocationInput from "./LocationInput";
 
@@ -33,7 +32,6 @@ export default function RideRequestCard({
   loading = false,
 }: Props) {
   const animatedBottom = useRef(new Animated.Value(0)).current;
-  const insets = useSafeAreaInsets();
 
   useEffect(() => {
     const showEvent =
@@ -42,8 +40,7 @@ export default function RideRequestCard({
       Platform.OS === "android" ? "keyboardDidHide" : "keyboardWillHide";
 
     const onShow = (e: any) => {
-      const keyboardHeight = e?.endCoordinates?.height ?? 300;
-      const toValue = keyboardHeight + insets.bottom; // ensure card lifts above keyboard + safe area
+      const toValue = e?.endCoordinates?.height ?? 300;
       Animated.timing(animatedBottom, {
         toValue,
         duration: e?.duration ?? 250,
@@ -53,14 +50,11 @@ export default function RideRequestCard({
 
     const onHide = (e: any) => {
       Animated.timing(animatedBottom, {
-        toValue: insets.bottom,
+        toValue: 0,
         duration: e?.duration ?? 250,
         useNativeDriver: false,
       }).start();
     };
-
-    // initialize above the bottom safe area so content isn't hidden behind home indicator
-    animatedBottom.setValue(insets.bottom);
 
     const showSub = Keyboard.addListener(showEvent, onShow);
     const hideSub = Keyboard.addListener(hideEvent, onHide);
@@ -69,12 +63,12 @@ export default function RideRequestCard({
       showSub.remove();
       hideSub.remove();
     };
-  }, [animatedBottom, insets.bottom]);
+  }, [animatedBottom]);
 
   return (
     <Animated.View
       className="absolute w-full bg-white rounded-t-3xl shadow-2xl px-6 pt-6 pb-10 elevation-5"
-      style={[{ bottom: animatedBottom, paddingBottom: insets.bottom }]}
+      style={[{ bottom: animatedBottom }]}
     >
       <View className="w-12 h-1.5 bg-gray-300 rounded-full self-center mb-6" />
 

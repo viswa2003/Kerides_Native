@@ -2,21 +2,16 @@ import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { Tabs } from "expo-router";
 import React from "react";
 
-import AppBar from "../../src/components/ui/AppBar";
-
 export default function TabsLayout() {
   return (
-    <>
-      <AppBar />
-
-      <Tabs
-        screenOptions={{
-          headerShown: false,
-          tabBarActiveTintColor: "#16A34A", // Tailwind green-600
-          tabBarStyle: { height: 64, paddingBottom: 8 },
-          tabBarLabelStyle: { fontSize: 12 },
-        }}
-      >
+    <Tabs
+      screenOptions={{
+        headerShown: false,
+        tabBarActiveTintColor: "#16A34A", // Tailwind green-600
+        tabBarStyle: { height: 64, paddingBottom: 8 },
+        tabBarLabelStyle: { fontSize: 12 },
+      }}
+    >
       <Tabs.Screen
         name="home"
         options={{
