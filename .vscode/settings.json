@@ -3,5 +3,11 @@
     "source.fixAll": "explicit",
     "source.organizeImports": "explicit",
     "source.sortMembers": "explicit"
-  }
+  },
+  // Add these lines to stop the mid-word jumping:
+  "editor.formatOnType": false,
+  "editor.acceptSuggestionOnCommitCharacter": false,
+  "editor.suggestOnTriggerCharacters": true,
+  "javascript.format.semicolons": "ignore",
+  "typescript.format.semicolons": "ignore"
 }
