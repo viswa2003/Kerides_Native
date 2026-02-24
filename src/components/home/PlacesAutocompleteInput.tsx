@@ -89,8 +89,8 @@ export default function PlacesAutocompleteInput({
               });
             }
           }}
-          onFail={(error) => console.log("Places Autocomplete Error:", error)}
-          onNotFound={() => console.log("No results found")}
+          onFail={() => {}}
+          onNotFound={() => {}}
           textInputProps={{
             onChangeText: (text) => {
               onChangeText(text);

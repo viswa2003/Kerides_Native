@@ -67,8 +67,8 @@ export default function HomeTab() {
         };
         setRegion(nextRegion);
         mapRef.current?.animateToRegion(nextRegion, 500);
-      } catch (error) {
-        console.log("Could not fetch initial location", error);
+      } catch {
+        // Location fetch failed silently on initial load
       }
     })();
   }, []);
@@ -217,12 +217,12 @@ export default function HomeTab() {
           const isSelected = index === selectedRouteIndex;
           const isHighlighted = index === highlightedRouteIndex;
 
-          // Dim everything except the selected (or highlighted) one.
+          // Use RGBA colors for opacity control
           const strokeColor = isSelected
             ? "#1E90FF"
             : isHighlighted
               ? "#60A5FA"
-              : "#E5E7EB";
+              : "#9CA3AF";
           const strokeWidth = isSelected
             ? selectPulse
               ? 8
@@ -230,7 +230,6 @@ export default function HomeTab() {
             : isHighlighted
               ? 5
               : 3;
-          const strokeOpacity = isSelected ? 1 : isHighlighted ? 0.95 : 0.25;
           const zIndex = isSelected ? 30 : isHighlighted ? 20 : 10;
 
           return (
@@ -239,7 +238,6 @@ export default function HomeTab() {
               coordinates={route.coordinates}
               strokeColor={strokeColor}
               strokeWidth={strokeWidth}
-              strokeOpacity={strokeOpacity}
               zIndex={zIndex}
               tappable
               onPress={() => {
@@ -248,12 +246,6 @@ export default function HomeTab() {
             />
           );
         })}
-
-        {/* {currentLocation && (
-          <Marker coordinate={currentLocation} title="Origin">
-            <View className="bg-black w-6 h-6 rounded-full border-2 border-white shadow-md" />
-          </Marker>
-        )} */}
       </MapView>
 
       <View className="absolute top-12 left-0 right-0 items-center">

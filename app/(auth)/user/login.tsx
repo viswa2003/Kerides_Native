@@ -28,7 +28,10 @@ export default function LoginPage() {
         <View className="mt-4 items-center">
           <Text className="text-sm text-gray-600">
             {"Don't have an account? "}
-            <Link href="/register" className="text-primary-600 font-medium">
+            <Link
+              href="/(auth)/user/register"
+              className="text-primary-600 font-medium"
+            >
               Create one
             </Link>
           </Text>
