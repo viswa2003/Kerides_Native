@@ -1,20 +1,20 @@
 import React, { useEffect, useRef } from "react";
 import {
-    Animated,
-    Dimensions,
-    Keyboard,
-    PanResponder,
-    Platform,
-    Text,
-    View,
+  Animated,
+  Dimensions,
+  Keyboard,
+  PanResponder,
+  Platform,
+  Text,
+  View,
 } from "react-native";
 import PlacesAutocompleteInput from "./PlacesAutocompleteInput";
 import VehicleTypeSelector from "./VehicleTypeSelector";
 
 const { height: SCREEN_HEIGHT } = Dimensions.get("window");
 const COLLAPSED_HEIGHT = 280;
-const ROUTE_SELECTED_HEIGHT = 380;
-const EXPANDED_HEIGHT = SCREEN_HEIGHT * 0.85;
+const ROUTE_SELECTED_HEIGHT = SCREEN_HEIGHT * 0.65;
+const EXPANDED_HEIGHT = SCREEN_HEIGHT * 0.65;
 
 type Props = {
   origin: string;
