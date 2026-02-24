@@ -1,11 +1,10 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef } from "react";
 import {
     Animated,
     Dimensions,
     Keyboard,
     PanResponder,
     Platform,
-    ScrollView,
     Text,
     TouchableOpacity,
     View,
@@ -54,7 +53,6 @@ export default function RideRequestCard({
 }: Props) {
   const animatedBottom = useRef(new Animated.Value(0)).current;
   const animatedHeight = useRef(new Animated.Value(COLLAPSED_HEIGHT)).current;
-  const [isExpanded, setIsExpanded] = useState(false);
   const currentHeight = useRef(COLLAPSED_HEIGHT);
 
   const panResponder = useRef(
@@ -87,7 +85,6 @@ export default function RideRequestCard({
         }
 
         currentHeight.current = targetHeight;
-        setIsExpanded(targetHeight === EXPANDED_HEIGHT);
 
         Animated.spring(animatedHeight, {
           toValue: targetHeight,
@@ -139,22 +136,17 @@ export default function RideRequestCard({
         <View className="w-12 h-1.5 bg-gray-300 rounded-full" />
       </View>
 
-      <ScrollView
-        showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingBottom: 20 }}
-        scrollEnabled={isExpanded}
-        keyboardShouldPersistTaps="handled"
-      >
+      <View className="flex-1" style={{ overflow: "visible" }}>
         <Text className="text-xl font-bold text-gray-900 mb-5">Where to?</Text>
 
-        <View className="flex-row mb-6">
+        <View className="flex-row mb-6" style={{ zIndex: 100, overflow: "visible" }}>
           <View className="items-center justify-center mr-4 pt-4 pb-2">
             <View className="w-2 h-2 rounded-full bg-gray-400" />
             <View className="w-0.5 h-12 bg-gray-300 my-1" />
             <View className="w-2 h-2 bg-black" />
           </View>
 
-          <View className="flex-1">
+          <View className="flex-1" style={{ zIndex: 100, overflow: "visible" }}>
             <View className="mb-3" style={{ zIndex: 20 }}>
               <PlacesAutocompleteInput
                 label="Origin"
@@ -207,7 +199,7 @@ export default function RideRequestCard({
           onHighlightRoute={(index) => onHighlightRoute?.(index)}
           onConfirmRoute={(index) => onSelectRoute?.(index)}
         />
-      </ScrollView>
+      </View>
     </Animated.View>
   );
 }

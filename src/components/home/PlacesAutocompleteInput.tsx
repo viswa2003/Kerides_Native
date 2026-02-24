@@ -1,7 +1,10 @@
 import { Feather } from "@expo/vector-icons";
-import React, { useRef, useEffect } from "react";
-import { Pressable, StyleSheet, View, Text } from "react-native";
-import { GooglePlacesAutocomplete, GooglePlacesAutocompleteRef } from "react-native-google-places-autocomplete";
+import React, { useEffect, useRef } from "react";
+import { Pressable, StyleSheet, Text, View } from "react-native";
+import {
+    GooglePlacesAutocomplete,
+    GooglePlacesAutocompleteRef,
+} from "react-native-google-places-autocomplete";
 
 type PlaceResult = {
   description: string;
@@ -65,6 +68,12 @@ export default function PlacesAutocompleteInput({
           fetchDetails
           onPress={(data, details = null) => {
             const description = data.description || "";
+            
+            // Set the text in the input field
+            if (ref.current) {
+              ref.current.setAddressText(description);
+            }
+            
             onChangeText(description);
 
             if (onPlaceSelected && details?.geometry?.location) {
@@ -80,11 +89,12 @@ export default function PlacesAutocompleteInput({
               });
             }
           }}
+          onFail={(error) => console.log("Places Autocomplete Error:", error)}
+          onNotFound={() => console.log("No results found")}
           textInputProps={{
             onChangeText: (text) => {
               onChangeText(text);
             },
-            value: undefined, // Let the component manage its own value
             placeholderTextColor: "#9CA3AF",
           }}
           query={{
@@ -92,8 +102,15 @@ export default function PlacesAutocompleteInput({
             language: "en",
             components: "country:in", // Restrict to India; remove or change as needed
           }}
+          requestUrl={{
+            useOnPlatform: "all",
+            url: "https://maps.googleapis.com/maps/api",
+          }}
+          keyboardShouldPersistTaps="handled"
+          listViewDisplayed="auto"
+          keepResultsAfterBlur={true}
           styles={{
-            container: { flex: 1 },
+            container: { flex: 1, zIndex: 1000 },
             textInputContainer: {
               backgroundColor: "transparent",
             },
@@ -111,12 +128,12 @@ export default function PlacesAutocompleteInput({
               right: -48,
               backgroundColor: "#fff",
               borderRadius: 8,
-              elevation: 5,
+              elevation: 10,
               shadowColor: "#000",
               shadowOpacity: 0.15,
               shadowRadius: 8,
               shadowOffset: { width: 0, height: 2 },
-              zIndex: 1000,
+              zIndex: 9999,
             },
             row: {
               paddingVertical: 12,
@@ -152,6 +169,8 @@ export default function PlacesAutocompleteInput({
 const styles = StyleSheet.create({
   container: {
     width: "100%",
+    overflow: "visible",
+    zIndex: 100,
   },
   label: {
     marginBottom: 4,
@@ -169,6 +188,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 4,
     zIndex: 10,
+    overflow: "visible",
   },
   leftIcon: {
     marginRight: 12,
