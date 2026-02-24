@@ -2,8 +2,8 @@ import { Feather } from "@expo/vector-icons";
 import React, { useEffect, useRef } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import {
-    GooglePlacesAutocomplete,
-    GooglePlacesAutocompleteRef,
+  GooglePlacesAutocomplete,
+  GooglePlacesAutocompleteRef,
 } from "react-native-google-places-autocomplete";
 
 type PlaceResult = {
@@ -68,12 +68,12 @@ export default function PlacesAutocompleteInput({
           fetchDetails
           onPress={(data, details = null) => {
             const description = data.description || "";
-            
+
             // Set the text in the input field
             if (ref.current) {
               ref.current.setAddressText(description);
             }
-            
+
             onChangeText(description);
 
             if (onPlaceSelected && details?.geometry?.location) {

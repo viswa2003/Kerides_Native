@@ -139,7 +139,10 @@ export default function RideRequestCard({
       <View className="flex-1" style={{ overflow: "visible" }}>
         <Text className="text-xl font-bold text-gray-900 mb-5">Where to?</Text>
 
-        <View className="flex-row mb-6" style={{ zIndex: 100, overflow: "visible" }}>
+        <View
+          className="flex-row mb-6"
+          style={{ zIndex: 100, overflow: "visible" }}
+        >
           <View className="items-center justify-center mr-4 pt-4 pb-2">
             <View className="w-2 h-2 rounded-full bg-gray-400" />
             <View className="w-0.5 h-12 bg-gray-300 my-1" />

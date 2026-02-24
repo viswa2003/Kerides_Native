@@ -18,6 +18,7 @@ export default function HomeTab() {
   const [origin, setOrigin] = useState("");
   const [destination, setDestination] = useState("");
   const [currentLocation, setCurrentLocation] = useState<Coords>(null);
+  const [originIsCurrentLocation, setOriginIsCurrentLocation] = useState(false);
 
   const [routes, setRoutes] = useState<DirectionsRouteOption[]>([]);
   const [highlightedRouteIndex, setHighlightedRouteIndex] = useState(-1);
@@ -87,7 +88,27 @@ export default function HomeTab() {
         longitudeDelta: 0.05,
       };
       setRegion(nextRegion);
-      setOrigin("My Current Location");
+
+      // Reverse geocode to get address
+      const reverseGeocode = await Location.reverseGeocodeAsync({
+        latitude: coords.latitude,
+        longitude: coords.longitude,
+      });
+
+      if (reverseGeocode.length > 0) {
+        const place = reverseGeocode[0];
+        const addressParts = [
+          place.name,
+          place.street,
+          place.city,
+          place.region,
+        ].filter(Boolean);
+        const address = addressParts.join(", ") || "My Current Location";
+        setOrigin(address);
+      } else {
+        setOrigin("My Current Location");
+      }
+      setOriginIsCurrentLocation(true);
 
       mapRef.current?.animateToRegion(nextRegion, 500);
     } catch {
@@ -108,9 +129,7 @@ export default function HomeTab() {
       setHighlightedRouteIndex(-1);
 
       const originParam =
-        origin === "My Current Location" && currentLocation
-          ? currentLocation
-          : origin;
+        originIsCurrentLocation && currentLocation ? currentLocation : origin;
       const result = await fetchDirectionsAlternatives({
         origin: originParam,
         destination,
@@ -138,6 +157,13 @@ export default function HomeTab() {
     setRoutes([]);
     setHighlightedRouteIndex(-1);
     setSelectedRouteIndex(-1);
+    setOriginIsCurrentLocation(false);
+  };
+
+  // Wrapper to reset the current location flag when user manually changes origin
+  const handleOriginChange = (value: string) => {
+    setOrigin(value);
+    setOriginIsCurrentLocation(false);
   };
 
   const activeIndex =
@@ -239,7 +265,7 @@ export default function HomeTab() {
       <RideRequestCard
         origin={origin}
         destination={destination}
-        setOrigin={setOrigin}
+        setOrigin={handleOriginChange}
         setDestination={setDestination}
         onSetCurrentLocation={handleSetCurrentLocation}
         onConfirm={handleConfirm}
