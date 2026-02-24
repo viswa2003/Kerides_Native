@@ -1,7 +1,7 @@
 import * as Location from "expo-location";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, StyleSheet, Text, View } from "react-native";
-import MapView, { Polyline } from "react-native-maps";
+import MapView, { Marker, Polyline } from "react-native-maps";
 
 import {
   fetchDirectionsAlternatives,
@@ -143,21 +143,13 @@ export default function HomeTab() {
       }
 
       setRoutes(result);
+      setSelectedRouteIndex(0);
       setHighlightedRouteIndex(0);
     } catch (e: any) {
       Alert.alert("Directions Error", e?.message || "Could not fetch routes.");
     } finally {
       setRoutesLoading(false);
     }
-  };
-
-  const handleClear = () => {
-    setOrigin("");
-    setDestination("");
-    setRoutes([]);
-    setHighlightedRouteIndex(-1);
-    setSelectedRouteIndex(-1);
-    setOriginIsCurrentLocation(false);
   };
 
   // Wrapper to reset the current location flag when user manually changes origin
@@ -215,22 +207,10 @@ export default function HomeTab() {
 
         {routes.map((route, index) => {
           const isSelected = index === selectedRouteIndex;
-          const isHighlighted = index === highlightedRouteIndex;
 
-          // Use RGBA colors for opacity control
-          const strokeColor = isSelected
-            ? "#1E90FF"
-            : isHighlighted
-              ? "#60A5FA"
-              : "#9CA3AF";
-          const strokeWidth = isSelected
-            ? selectPulse
-              ? 8
-              : 6
-            : isHighlighted
-              ? 5
-              : 3;
-          const zIndex = isSelected ? 30 : isHighlighted ? 20 : 10;
+          const strokeColor = isSelected ? "#1565C0" : "#90CAF9";
+          const strokeWidth = isSelected ? 6 : 4;
+          const zIndex = isSelected ? 30 : 10;
 
           return (
             <Polyline
@@ -241,11 +221,61 @@ export default function HomeTab() {
               zIndex={zIndex}
               tappable
               onPress={() => {
+                setSelectedRouteIndex(index);
                 setHighlightedRouteIndex(index);
               }}
             />
           );
         })}
+
+        {selectedRouteIndex >= 0 &&
+          routes[selectedRouteIndex]?.coordinates?.length &&
+          routes[selectedRouteIndex]?.durationText &&
+          (() => {
+            const route = routes[selectedRouteIndex];
+            const midIndex = Math.floor(route.coordinates.length / 2);
+            const mid = route.coordinates[midIndex];
+
+            if (!mid?.latitude || !mid?.longitude) return null;
+
+            return (
+              <Marker
+                coordinate={mid}
+                tracksViewChanges={false}
+                zIndex={50}
+                onPress={() => {
+                  setHighlightedRouteIndex(selectedRouteIndex);
+                }}
+              >
+                <View style={{ alignItems: "center" }}>
+                  <View
+                    style={{
+                      backgroundColor: "#1565C0",
+                      paddingHorizontal: 16,
+                      paddingVertical: 8,
+                      borderRadius: 20,
+                      borderWidth: 1.5,
+                      borderColor: "#1565C0",
+                      minWidth: 60,
+                      alignItems: "center",
+                    }}
+                  >
+                    <Text
+                      style={{
+                        fontSize: 13,
+                        fontWeight: "700",
+                        color: "#ffffff",
+                        textAlign: "center",
+                      }}
+                      numberOfLines={1}
+                    >
+                      {route.durationText}
+                    </Text>
+                  </View>
+                </View>
+              </Marker>
+            );
+          })()}
       </MapView>
 
       <View className="absolute top-12 left-0 right-0 items-center">
@@ -260,20 +290,10 @@ export default function HomeTab() {
         setOrigin={handleOriginChange}
         setDestination={setDestination}
         onSetCurrentLocation={handleSetCurrentLocation}
-        onConfirm={handleConfirm}
-        onClear={handleClear}
-        routes={routes}
-        highlightedRouteIndex={highlightedRouteIndex}
-        selectedRouteIndex={selectedRouteIndex}
-        onHighlightRoute={(index) => {
-          setHighlightedRouteIndex(index);
-        }}
-        onSelectRoute={(index) => {
-          setSelectedRouteIndex(index);
-          setHighlightedRouteIndex(index);
-        }}
+        onDestinationSelected={handleConfirm}
         loading={routesLoading}
         placesApiKey={directionsApiKey}
+        routeSelected={selectedRouteIndex >= 0}
       />
     </View>
   );

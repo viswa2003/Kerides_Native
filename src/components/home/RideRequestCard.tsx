@@ -6,50 +6,38 @@ import {
     PanResponder,
     Platform,
     Text,
-    TouchableOpacity,
     View,
 } from "react-native";
-import type { DirectionsRouteOption } from "../../api/directions";
-import Button from "../ui/Button";
 import PlacesAutocompleteInput from "./PlacesAutocompleteInput";
-import RouteOptionsList from "./RouteOptionsList";
+import VehicleTypeSelector from "./VehicleTypeSelector";
 
 const { height: SCREEN_HEIGHT } = Dimensions.get("window");
-const COLLAPSED_HEIGHT = 340;
+const COLLAPSED_HEIGHT = 280;
+const ROUTE_SELECTED_HEIGHT = 380;
 const EXPANDED_HEIGHT = SCREEN_HEIGHT * 0.85;
 
 type Props = {
   origin: string;
   destination: string;
   onSetCurrentLocation: () => void;
-  onConfirm: () => void;
-  onClear: () => void;
   setOrigin: (v: string) => void;
   setDestination: (v: string) => void;
+  onDestinationSelected: () => void;
   loading?: boolean;
-  routes?: DirectionsRouteOption[];
-  highlightedRouteIndex?: number;
-  selectedRouteIndex?: number;
-  onHighlightRoute?: (index: number) => void;
-  onSelectRoute?: (index: number) => void;
   placesApiKey?: string;
+  routeSelected?: boolean;
 };
 
 export default function RideRequestCard({
   origin,
   destination,
   onSetCurrentLocation,
-  onConfirm,
-  onClear,
   setOrigin,
   setDestination,
+  onDestinationSelected,
   loading = false,
-  routes = [],
-  highlightedRouteIndex = -1,
-  selectedRouteIndex = -1,
-  onHighlightRoute,
-  onSelectRoute,
   placesApiKey = "",
+  routeSelected = false,
 }: Props) {
   const animatedBottom = useRef(new Animated.Value(0)).current;
   const animatedHeight = useRef(new Animated.Value(COLLAPSED_HEIGHT)).current;
@@ -127,6 +115,19 @@ export default function RideRequestCard({
     };
   }, [animatedBottom]);
 
+  // Animate height when route is selected/deselected
+  useEffect(() => {
+    const targetHeight = routeSelected
+      ? ROUTE_SELECTED_HEIGHT
+      : COLLAPSED_HEIGHT;
+    currentHeight.current = targetHeight;
+    Animated.spring(animatedHeight, {
+      toValue: targetHeight,
+      useNativeDriver: false,
+      bounciness: 4,
+    }).start();
+  }, [routeSelected, animatedHeight]);
+
   return (
     <Animated.View
       className="absolute w-full bg-white rounded-t-3xl shadow-2xl px-6 pt-2 pb-10 elevation-5"
@@ -171,37 +172,13 @@ export default function RideRequestCard({
                 onChangeText={setDestination}
                 apiKey={placesApiKey}
                 icon="map"
+                onPlaceSelected={() => onDestinationSelected()}
               />
             </View>
           </View>
         </View>
 
-        <View className="flex-row justify-between gap-x-4 mt-2">
-          <TouchableOpacity
-            className="flex-1 bg-gray-100 py-4 rounded-xl items-center justify-center"
-            onPress={onClear}
-          >
-            <Text className="text-gray-700 font-bold text-base">Clear</Text>
-          </TouchableOpacity>
-
-          <Button
-            className="flex-1"
-            onPress={onConfirm}
-            loading={loading}
-            accessibilityLabel="Search routes"
-            variant="success"
-          >
-            Search Routes
-          </Button>
-        </View>
-
-        <RouteOptionsList
-          routes={routes}
-          highlightedIndex={highlightedRouteIndex}
-          selectedIndex={selectedRouteIndex}
-          onHighlightRoute={(index) => onHighlightRoute?.(index)}
-          onConfirmRoute={(index) => onSelectRoute?.(index)}
-        />
+        {routeSelected ? <VehicleTypeSelector /> : null}
       </View>
     </Animated.View>
   );
