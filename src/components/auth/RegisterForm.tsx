@@ -3,6 +3,7 @@ import { useRouter } from "expo-router";
 import React, { useState } from "react";
 import { Alert, Linking, Pressable, Text, View } from "react-native";
 import { register, RegisterRequest, Role } from "../../api/auth";
+import { useAuth } from "../../auth/AuthProvider";
 import Button from "../ui/Button";
 import Card from "../ui/Card";
 import Checkbox from "../ui/Checkbox";
@@ -20,8 +21,13 @@ function isStrongPassword(value: string) {
   return value.length >= 8;
 }
 
+function isValidPhoneNumber(value: string) {
+  return /^[6-9]\d{9}$/.test(value);
+}
+
 export default function RegisterForm({ role = "USER" }: Props) {
   const router = useRouter();
+  const { signIn } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -39,6 +45,9 @@ export default function RegisterForm({ role = "USER" }: Props) {
     const e: typeof errors = {};
     if (!fullName.trim()) e.fullName = "Full name is required";
     if (!isEmail(email)) e.email = "Enter a valid email";
+    if (!phoneNumber.trim()) e.phoneNumber = "Phone number is required";
+    else if (!isValidPhoneNumber(phoneNumber.trim()))
+      e.phoneNumber = "Enter a valid 10-digit phone number";
     if (!isStrongPassword(password))
       e.password = "Password must be at least 8 characters";
     if (password !== confirmPassword)
@@ -56,19 +65,19 @@ export default function RegisterForm({ role = "USER" }: Props) {
       email: email.trim().toLowerCase(),
       password,
       fullName: fullName.trim(),
-      phoneNumber: phoneNumber.trim() || undefined,
+      phoneNumber: phoneNumber.trim(),
       role,
     };
 
     try {
-      await register(payload);
-      Alert.alert("Success", "Account created — please log in.", [
-        {
-          text: "OK",
-          onPress: () =>
-            router.push(role === "DRIVER" ? "/driver/login" : "/login"),
-        },
-      ]);
+      const resp = await register(payload);
+      await signIn(resp.accessToken, resp.user.role);
+
+      if (resp.user.role === "DRIVER") {
+        router.replace("/driver/home");
+      } else {
+        router.replace("/user/home");
+      }
     } catch (err: any) {
       Alert.alert("Registration failed", err?.message || String(err));
     } finally {
@@ -114,6 +123,7 @@ export default function RegisterForm({ role = "USER" }: Props) {
           keyboardType="phone-pad"
           autoComplete="tel"
           leftIcon={<Feather name="phone" size={18} color="#6B7280" />}
+          error={errors.phoneNumber || null}
         />
       </View>
 

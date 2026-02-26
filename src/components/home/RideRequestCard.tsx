@@ -1,20 +1,24 @@
-import React, { useEffect, useRef } from "react";
-import {
-  Animated,
-  Dimensions,
-  Keyboard,
-  PanResponder,
-  Platform,
-  Text,
-  View,
-} from "react-native";
+import React, { useEffect, useState } from "react";
+import { Dimensions, Text, View } from "react-native";
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withSpring,
+  type SharedValue,
+} from "react-native-reanimated";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
+
+import Button from "../ui/Button";
 import PlacesAutocompleteInput from "./PlacesAutocompleteInput";
-import VehicleTypeSelector from "./VehicleTypeSelector";
+import VehicleTypeSelector, {
+  type VehicleType,
+} from "./VehicleTypeSelector";
 
 const { height: SCREEN_HEIGHT } = Dimensions.get("window");
+
 const COLLAPSED_HEIGHT = 280;
 const ROUTE_SELECTED_HEIGHT = SCREEN_HEIGHT * 0.65;
-const EXPANDED_HEIGHT = SCREEN_HEIGHT * 0.65;
+const MAX_HEIGHT = SCREEN_HEIGHT - 140; // ✅ Stops at 80%
 
 type Props = {
   origin: string;
@@ -26,6 +30,8 @@ type Props = {
   loading?: boolean;
   placesApiKey?: string;
   routeSelected?: boolean;
+  onProceed?: (vehicle: VehicleType) => void;
+  cardHeightShared?: SharedValue<number>;
 };
 
 export default function RideRequestCard({
@@ -38,120 +44,144 @@ export default function RideRequestCard({
   loading = false,
   placesApiKey = "",
   routeSelected = false,
+  onProceed,
+  cardHeightShared,
 }: Props) {
-  const animatedBottom = useRef(new Animated.Value(0)).current;
-  const animatedHeight = useRef(new Animated.Value(COLLAPSED_HEIGHT)).current;
-  const currentHeight = useRef(COLLAPSED_HEIGHT);
+  const [selectedVehicle, setSelectedVehicle] =
+    useState<VehicleType | null>(null);
 
-  const panResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder: (_, gestureState) => {
-        return Math.abs(gestureState.dy) > 5;
-      },
-      onPanResponderMove: (_, gestureState) => {
-        const newHeight = currentHeight.current - gestureState.dy;
-        const clampedHeight = Math.max(
-          COLLAPSED_HEIGHT,
-          Math.min(EXPANDED_HEIGHT, newHeight),
+  const animatedHeight = useSharedValue(COLLAPSED_HEIGHT);
+  const startHeight = useSharedValue(COLLAPSED_HEIGHT);
+
+  const animatedCardStyle = useAnimatedStyle(() => ({
+    height: animatedHeight.value,
+  }));
+
+  /*
+    -----------------------------
+    Gesture Logic (UI Thread)
+    -----------------------------
+  */
+
+  const panGesture = Gesture.Pan()
+    .onStart(() => {
+      // Anchor height when gesture begins
+      startHeight.value = animatedHeight.value;
+    })
+    .onUpdate((event) => {
+      const newHeight =
+        startHeight.value - event.translationY;
+
+      const clampedHeight = Math.max(
+        COLLAPSED_HEIGHT,
+        Math.min(MAX_HEIGHT, newHeight)
+      );
+
+      animatedHeight.value = clampedHeight;
+
+      if (cardHeightShared) {
+        cardHeightShared.value = clampedHeight;
+      }
+    })
+    .onEnd((event) => {
+      const velocity = event.velocityY;
+
+      const stops = routeSelected
+        ? [COLLAPSED_HEIGHT, ROUTE_SELECTED_HEIGHT, MAX_HEIGHT]
+        : [COLLAPSED_HEIGHT, ROUTE_SELECTED_HEIGHT];
+
+      let targetHeight: number;
+
+      if (velocity > 800) {
+        // Fast downward flick
+        targetHeight =
+          stops
+            .filter((s) => s < animatedHeight.value)
+            .pop() ?? COLLAPSED_HEIGHT;
+      } else if (velocity < -800) {
+        // Fast upward flick
+        targetHeight =
+          stops.find((s) => s > animatedHeight.value) ??
+          stops[stops.length - 1];
+      } else {
+        // Snap to closest stop
+        targetHeight = stops.reduce((prev, curr) =>
+          Math.abs(curr - animatedHeight.value) <
+          Math.abs(prev - animatedHeight.value)
+            ? curr
+            : prev
         );
-        animatedHeight.setValue(clampedHeight);
-      },
-      onPanResponderRelease: (_, gestureState) => {
-        const newHeight = currentHeight.current - gestureState.dy;
-        const velocity = gestureState.vy;
+      }
 
-        let targetHeight: number;
-        if (velocity < -0.5) {
-          targetHeight = EXPANDED_HEIGHT;
-        } else if (velocity > 0.5) {
-          targetHeight = COLLAPSED_HEIGHT;
-        } else {
-          const midpoint = (COLLAPSED_HEIGHT + EXPANDED_HEIGHT) / 2;
-          targetHeight =
-            newHeight > midpoint ? EXPANDED_HEIGHT : COLLAPSED_HEIGHT;
-        }
+      animatedHeight.value = withSpring(targetHeight, {
+        damping: 15,
+        stiffness: 120,
+      });
 
-        currentHeight.current = targetHeight;
+      if (cardHeightShared) {
+        cardHeightShared.value = withSpring(targetHeight, {
+          damping: 15,
+          stiffness: 120,
+        });
+      }
+    });
 
-        Animated.spring(animatedHeight, {
-          toValue: targetHeight,
-          useNativeDriver: false,
-          bounciness: 4,
-        }).start();
-      },
-    }),
-  ).current;
+  /*
+    -----------------------------
+    Auto expand on route selection
+    -----------------------------
+  */
 
-  useEffect(() => {
-    const showEvent =
-      Platform.OS === "android" ? "keyboardDidShow" : "keyboardWillShow";
-    const hideEvent =
-      Platform.OS === "android" ? "keyboardDidHide" : "keyboardWillHide";
-
-    const onShow = (e: any) => {
-      const toValue = e?.endCoordinates?.height ?? 300;
-      Animated.timing(animatedBottom, {
-        toValue,
-        duration: e?.duration ?? 250,
-        useNativeDriver: false,
-      }).start();
-    };
-
-    const onHide = (e: any) => {
-      Animated.timing(animatedBottom, {
-        toValue: 0,
-        duration: e?.duration ?? 250,
-        useNativeDriver: false,
-      }).start();
-    };
-
-    const showSub = Keyboard.addListener(showEvent, onShow);
-    const hideSub = Keyboard.addListener(hideEvent, onHide);
-
-    return () => {
-      showSub.remove();
-      hideSub.remove();
-    };
-  }, [animatedBottom]);
-
-  // Animate height when route is selected/deselected
   useEffect(() => {
     const targetHeight = routeSelected
       ? ROUTE_SELECTED_HEIGHT
       : COLLAPSED_HEIGHT;
-    currentHeight.current = targetHeight;
-    Animated.spring(animatedHeight, {
-      toValue: targetHeight,
-      useNativeDriver: false,
-      bounciness: 4,
-    }).start();
-  }, [routeSelected, animatedHeight]);
+
+    animatedHeight.value = withSpring(targetHeight, {
+      damping: 15,
+      stiffness: 120,
+    });
+
+    if (cardHeightShared) {
+      cardHeightShared.value = withSpring(targetHeight, {
+        damping: 15,
+        stiffness: 120,
+      });
+    }
+  }, [routeSelected]);
 
   return (
     <Animated.View
-      className="absolute w-full bg-white rounded-t-3xl shadow-2xl px-6 pt-2 pb-10 elevation-5"
-      style={[{ bottom: animatedBottom, height: animatedHeight }]}
+      className="w-full bg-white rounded-t-3xl shadow-2xl px-6 pt-2 pb-10 elevation-5"
+      style={animatedCardStyle}
     >
-      <View {...panResponder.panHandlers} className="items-center py-4">
-        <View className="w-12 h-1.5 bg-gray-300 rounded-full" />
-      </View>
+      {/* Drag Handle Only */}
+      <GestureDetector gesture={panGesture}>
+        <View className="items-center py-4">
+          <View className="w-12 h-1.5 bg-gray-300 rounded-full" />
+        </View>
+      </GestureDetector>
 
-      <View className="flex-1" style={{ overflow: "visible" }}>
-        <Text className="text-xl font-bold text-gray-900 mb-5">Where to?</Text>
+      {/* Scrollable Content */}
+      <Animated.ScrollView
+        className="flex-1"
+        contentContainerStyle={{ paddingBottom: 40 }}
+        showsVerticalScrollIndicator={false}
+        nestedScrollEnabled
+      >
+        <Text className="text-xl font-bold text-gray-900 mb-5">
+          Where to?
+        </Text>
 
-        <View
-          className="flex-row mb-6"
-          style={{ zIndex: 100, overflow: "visible" }}
-        >
+        <View className="flex-row mb-6">
           <View className="items-center justify-center mr-4 pt-4 pb-2">
             <View className="w-2 h-2 rounded-full bg-gray-400" />
             <View className="w-0.5 h-12 bg-gray-300 my-1" />
             <View className="w-2 h-2 bg-black" />
           </View>
 
-          <View className="flex-1" style={{ zIndex: 100, overflow: "visible" }}>
-            <View className="mb-3" style={{ zIndex: 20 }}>
+          <View className="flex-1">
+            <View className="mb-3">
               <PlacesAutocompleteInput
                 label="Origin"
                 placeholder="Enter origin or use current location"
@@ -164,22 +194,39 @@ export default function RideRequestCard({
               />
             </View>
 
-            <View style={{ zIndex: 10 }}>
-              <PlacesAutocompleteInput
-                label="Destination"
-                placeholder="Enter destination"
-                value={destination}
-                onChangeText={setDestination}
-                apiKey={placesApiKey}
-                icon="map"
-                onPlaceSelected={() => onDestinationSelected()}
-              />
-            </View>
+            <PlacesAutocompleteInput
+              label="Destination"
+              placeholder="Enter destination"
+              value={destination}
+              onChangeText={setDestination}
+              apiKey={placesApiKey}
+              icon="map"
+              onPlaceSelected={onDestinationSelected}
+            />
           </View>
         </View>
 
-        {routeSelected ? <VehicleTypeSelector /> : null}
-      </View>
+        {routeSelected && (
+          <>
+            <VehicleTypeSelector
+              onSelect={setSelectedVehicle}
+            />
+
+            <View className="mt-4">
+              <Button
+                onPress={() =>
+                  selectedVehicle &&
+                  onProceed?.(selectedVehicle)
+                }
+                disabled={!selectedVehicle}
+                accessibilityLabel="Proceed with ride"
+              >
+                Proceed
+              </Button>
+            </View>
+          </>
+        )}
+      </Animated.ScrollView>
     </Animated.View>
   );
 }

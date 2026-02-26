@@ -1,0 +1,2826 @@
+================================================================================
+KERIDES NATIVE — FRONTEND PROJECT CONTEXT
+================================================================================
+Date: February 25, 2026
+Stack: React Native (Expo SDK 54), Expo Router v6, NativeWind v4, TypeScript
+App: Ride-hailing app ("Kerides") with separate User and Driver workflows
+
+================================================================================
+PROJECT OVERVIEW & ARCHITECTURE DECISIONS
+================================================================================
+
+1. TWO SEPARATE "APPS" INSIDE ONE CODEBASE
+   - User: requests rides, sees map + route options, picks vehicle type
+     Tabs: Home (map), History (placeholder), Accounts (sign out)
+   - Driver: accepts ride requests (placeholder screens)
+     Tabs: Home (placeholder), Bookings (placeholder), Profile (sign out)
+
+2. ROUTING STRATEGY (Expo Router file-based)
+   - app/index.tsx acts as the entry point / role-based redirector
+   - app/(auth)/ contains login/register pages for both roles (unguarded)
+   - app/user/ is guarded by _layout.tsx → only role=USER can enter
+   - app/driver/ is guarded by _layout.tsx → only role=DRIVER can enter
+   - Each role group has its own (tabs)/ with independent tab navigators
+
+3. AUTH / SESSION
+   - expo-secure-store persists: token, role, lastRole (survives logout)
+   - AuthProvider (React context) hydrates from SecureStore on mount
+   - useAuth() hook exposes: isLoading, token, role, lastRole, signIn, signOut
+   - signIn stores token+role to SecureStore, signOut clears token+role (keeps lastRole)
+   - On app start, logged-out users are sent to lastRole's login (defaults USER)
+
+4. NAVIGATION FLOW
+   Logged out:
+     / → reads lastRole → /user/login OR /driver/login
+     User login page has link to driver login, and vice versa
+     Register auto-logs-in and redirects to role's home tab
+
+   Logged in:
+     / → checks role → /user/home OR /driver/home
+     Cross-role deep links are blocked by route guards (redirect out)
+     Sign out clears session → router.replace to login page
+
+5. API LAYER
+   - src/api/auth.ts: login() and register() using fetch (relative URLs)
+   - src/api/directions.ts: Google Directions API for route alternatives
+   - IMPORTANT: API base URL is relative ("/auth/login") — works on web but
+     needs an absolute API_BASE for native device testing
+
+6. TEMP TESTING STATE (MUST UNDO BEFORE PRODUCTION)
+   - app/index.tsx: always redirects to /user/home (auth logic commented out)
+   - app/user/_layout.tsx: auth guard bypassed (always renders Stack)
+   Search for "TEMP" comments in those files to restore
+
+================================================================================
+FILE STRUCTURE
+================================================================================
+
+app/
+  _layout.tsx              — Root layout (fonts, AuthProvider wrapper)
+  index.tsx                — Entry redirector (role-aware, TEMP bypassed)
+  (auth)/
+    _layout.tsx            — Auth stack layout
+    user/
+      login.tsx            — User login page
+      register.tsx         — User register page
+    driver/
+      login.tsx            — Driver login page
+      register.tsx         — Driver register page
+  user/
+    _layout.tsx            — User route guard (TEMP bypassed)
+    (tabs)/
+      _layout.tsx          — User tab navigator (Home/History/Accounts)
+      home.tsx             — User home (map + ride request card)
+      history.tsx          — Placeholder
+      accounts.tsx         — Sign out button
+  driver/
+    _layout.tsx            — Driver route guard (active)
+    (tabs)/
+      _layout.tsx          — Driver tab navigator (Home/Bookings/Profile)
+      home.tsx             — Placeholder
+      bookings.tsx         — Placeholder
+      profile.tsx          — Sign out button
+
+src/
+  auth/
+    session.ts             — SecureStore get/set/clear (token, role, lastRole)
+    AuthProvider.tsx        — React context + useAuth() hook
+  api/
+    auth.ts                — login(), register() API calls + types
+    directions.ts          — fetchDirectionsAlternatives() → Google API
+  components/
+    auth/
+      LoginForm.tsx        — Shared login form (role prop)
+      RegisterForm.tsx     — Shared register form (role prop, auto-login)
+    home/
+      PlacesAutocompleteInput.tsx — Google Places autocomplete wrapper
+      RideRequestCard.tsx  — Bottom sheet with origin/dest + vehicle selector
+      RouteEndpointsMarkers.tsx   — Start/end map markers
+      RouteOptionsList.tsx — Route cards (highlight/select)
+      VehicleTypeSelector.tsx     — Vehicle type picker
+    ui/
+      Button.tsx           — Primary/secondary/ghost/success button
+      Card.tsx             — Simple card wrapper
+      Checkbox.tsx         — Checkbox with label
+      TextField.tsx        — Text input with label, icons, error
+    screens/               — (empty, for future use)
+    user/                  — (empty, for future use)
+  utils/
+    decodePolyline.ts      — Google encoded polyline decoder
+
+Config:
+  package.json, app.config.ts, tailwind.config.js, tsconfig.json,
+  babel.config.js, metro.config.js, global.css
+
+================================================================================
+FILE CONTENTS — ALL SOURCE FILES
+================================================================================
+
+
+--- app/_layout.tsx ---
+```tsx
+import {
+    Inter_400Regular,
+    Inter_600SemiBold,
+    Inter_700Bold,
+} from "@expo-google-fonts/inter";
+import { useFonts } from "expo-font";
+import { Stack } from "expo-router";
+import { StatusBar } from "expo-status-bar";
+import { useEffect } from "react";
+import { Text, TextInput } from "react-native";
+import "../global.css";
+import { AuthProvider } from "../src/auth/AuthProvider";
+
+export default function RootLayout() {
+  const [fontsLoaded] = useFonts({
+    Inter: Inter_400Regular,
+    "Inter-SemiBold": Inter_600SemiBold,
+    "Inter-Bold": Inter_700Bold,
+  });
+
+  useEffect(() => {
+    if (!fontsLoaded) return;
+
+    (Text as unknown as any).defaultProps =
+      (Text as unknown as any).defaultProps || {};
+    (Text as unknown as any).defaultProps.style = {
+      ...((Text as unknown as any).defaultProps.style || {}),
+      fontFamily: "Inter",
+    };
+
+    (TextInput as unknown as any).defaultProps =
+      (TextInput as unknown as any).defaultProps || {};
+    (TextInput as unknown as any).defaultProps.style = {
+      ...((TextInput as unknown as any).defaultProps.style || {}),
+      fontFamily: "Inter",
+    };
+  }, [fontsLoaded]);
+
+  if (!fontsLoaded) return null;
+
+  return (
+    <AuthProvider>
+      <StatusBar style="dark" />
+      <Stack screenOptions={{ headerShown: false }} />
+    </AuthProvider>
+  );
+}
+```
+
+
+--- app/index.tsx ---
+```tsx
+import { useRouter } from "expo-router";
+import { useEffect } from "react";
+import { View } from "react-native";
+import { useAuth } from "../src/auth/AuthProvider";
+
+/**
+ * Root entry: decides where to send the user on app start.
+ * - Logged in + USER  → /user/home
+ * - Logged in + DRIVER → /driver/home
+ * - Logged out → lastRole-based login (defaults to user login)
+ */
+export default function Index() {
+  const router = useRouter();
+  const { isLoading, token, role, lastRole } = useAuth();
+
+  useEffect(() => {
+    if (isLoading) return;
+
+    // TEMP: always open user home for testing
+    router.replace("/user/home");
+
+    // if (token && role === "DRIVER") {
+    //   router.replace("/driver/home");
+    // } else if (token && role === "USER") {
+    //   router.replace("/user/home");
+    // } else {
+    //   // Not logged in — remember last role used
+    //   if (lastRole === "DRIVER") {
+    //     router.replace("/driver/login");
+    //   } else {
+    //     router.replace("/user/login");
+    //   }
+    // }
+  }, [isLoading, token, role, lastRole, router]);
+
+  return <View style={{ flex: 1 }} />;
+}
+```
+
+
+--- app/(auth)/_layout.tsx ---
+```tsx
+import { Stack } from "expo-router";
+
+export default function AuthLayout() {
+  return <Stack screenOptions={{ headerShown: false }} />;
+}
+```
+
+
+--- app/(auth)/user/login.tsx ---
+```tsx
+import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { Link } from "expo-router";
+import React from "react";
+import { Text, View } from "react-native";
+import LoginForm from "../../../src/components/auth/LoginForm";
+
+export default function LoginPage() {
+  return (
+    <View className="flex-1 bg-white">
+      <View className="items-center mt-12 px-6">
+        <View className="bg-primary-600 w-16 h-16 rounded-xl items-center justify-center shadow mb-4">
+          <MaterialCommunityIcons name="account" size={28} color="#fff" />
+        </View>
+        <Text className="text-3xl font-bold text-gray-900">Welcome back</Text>
+        <Text className="text-sm text-gray-500 mt-1">Sign in to continue</Text>
+      </View>
+
+      <View className="mt-8 px-4">
+        <LoginForm role="USER" />
+
+        <View className="mt-4 items-center">
+          <Text className="text-sm text-gray-600">
+            {"Don't have an account? "}
+            <Link
+              href="/user/register"
+              className="text-primary-600 font-medium"
+            >
+              Create one
+            </Link>
+          </Text>
+        </View>
+
+        <View className="mt-4 items-center">
+          <Link
+            href="/driver/login"
+            className="text-sm text-primary-600 font-medium"
+          >
+            Sign in as a Driver instead
+          </Link>
+        </View>
+
+        <View className="mt-6 items-center">
+          <Text className="text-xs text-gray-400">
+            Signing in as <Text className="font-medium">USER</Text>
+          </Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+```
+
+
+--- app/(auth)/user/register.tsx ---
+```tsx
+import { Link } from "expo-router";
+import React from "react";
+import { Text, View } from "react-native";
+import RegisterForm from "../../../src/components/auth/RegisterForm";
+
+export default function UserRegister() {
+  return (
+    <View className="flex-1 bg-white">
+      <View className="items-center mt-12 px-6">
+        <View className="bg-primary-600 w-16 h-16 rounded-xl items-center justify-center shadow mb-4" />
+        <Text className="text-3xl font-bold text-gray-900">Create Account</Text>
+        <Text className="text-sm text-gray-500 mt-1">
+          Sign up to get started
+        </Text>
+      </View>
+
+      <View className="mt-8 px-4">
+        <RegisterForm role="USER" />
+
+        <View className="mt-4 items-center">
+          <Text className="text-sm text-gray-600">
+            Already have an account?{" "}
+            <Link href="/user/login" className="text-primary-600 font-medium">
+              Sign in
+            </Link>
+          </Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+```
+
+
+--- app/(auth)/driver/login.tsx ---
+```tsx
+import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { Link } from "expo-router";
+import React from "react";
+import { Text, View } from "react-native";
+import LoginForm from "../../../src/components/auth/LoginForm";
+
+export default function DriverLogin() {
+  return (
+    <View className="flex-1 bg-white">
+      <View className="items-center mt-12 px-6">
+        <View className="bg-primary-600 w-16 h-16 rounded-xl items-center justify-center shadow mb-4">
+          <MaterialCommunityIcons name="steering" size={28} color="#fff" />
+        </View>
+        <Text className="text-3xl font-bold text-gray-900">Welcome back</Text>
+        <Text className="text-sm text-gray-500 mt-1">Sign in as a driver</Text>
+      </View>
+
+      <View className="mt-8 px-4">
+        <LoginForm role="DRIVER" />
+
+        <View className="mt-4 items-center">
+          <Text className="text-sm text-gray-600">
+            {"Don't have an account? "}
+            <Link
+              href="/driver/register"
+              className="text-primary-600 font-medium"
+            >
+              Create one
+            </Link>
+          </Text>
+        </View>
+
+        <View className="mt-4 items-center">
+          <Link
+            href="/user/login"
+            className="text-sm text-primary-600 font-medium"
+          >
+            Sign in as a User instead
+          </Link>
+        </View>
+
+        <View className="mt-6 items-center">
+          <Text className="text-xs text-gray-400">
+            Signing in as <Text className="font-medium">DRIVER</Text>
+          </Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+```
+
+
+--- app/(auth)/driver/register.tsx ---
+```tsx
+import { Link } from "expo-router";
+import React from "react";
+import { Text, View } from "react-native";
+import RegisterForm from "../../../src/components/auth/RegisterForm";
+
+export default function DriverRegister() {
+  return (
+    <View className="flex-1 bg-white">
+      <View className="items-center mt-12 px-6">
+        <View className="bg-primary-600 w-16 h-16 rounded-xl items-center justify-center shadow mb-4" />
+        <Text className="text-3xl font-bold text-gray-900">Create Account</Text>
+        <Text className="text-sm text-gray-500 mt-1">Register as a driver</Text>
+      </View>
+
+      <View className="mt-8 px-4">
+        <RegisterForm role="DRIVER" />
+
+        <View className="mt-4 items-center">
+          <Text className="text-sm text-gray-600">
+            Already have an account?{" "}
+            <Link href="/driver/login" className="text-primary-600 font-medium">
+              Sign in
+            </Link>
+          </Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+```
+
+
+--- app/user/_layout.tsx ---
+```tsx
+import { Stack } from "expo-router";
+import React from "react";
+
+/**
+ * Guard: only authenticated users with role === USER may enter.
+ * - Not logged in → redirect to user login
+ * - Logged in as DRIVER → redirect to driver home
+ */
+export default function UserLayout() {
+  // TEMP: bypass auth guard for testing
+  return <Stack screenOptions={{ headerShown: false }} />;
+
+  // const { isLoading, token, role } = useAuth();
+  //
+  // if (isLoading) return null;
+  // if (!token) return <Redirect href="/user/login" />;
+  // if (role !== "USER") return <Redirect href="/driver/home" />;
+  //
+  // return <Stack screenOptions={{ headerShown: false }} />;
+}
+```
+
+
+--- app/user/(tabs)/_layout.tsx ---
+```tsx
+import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { Tabs } from "expo-router";
+import React from "react";
+
+export default function UserTabsLayout() {
+  return (
+    <Tabs
+      screenOptions={{
+        headerShown: false,
+        tabBarActiveTintColor: "#16A34A",
+        tabBarStyle: { height: 64, paddingBottom: 8 },
+        tabBarLabelStyle: { fontSize: 12 },
+      }}
+    >
+      <Tabs.Screen
+        name="home"
+        options={{
+          title: "Home",
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons
+              name="home-outline"
+              size={size ?? 24}
+              color={color}
+            />
+          ),
+        }}
+      />
+
+      <Tabs.Screen
+        name="history"
+        options={{
+          title: "History",
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons
+              name="history"
+              size={size ?? 24}
+              color={color}
+            />
+          ),
+        }}
+      />
+
+      <Tabs.Screen
+        name="accounts"
+        options={{
+          title: "Accounts",
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons
+              name="account-circle-outline"
+              size={size ?? 24}
+              color={color}
+            />
+          ),
+        }}
+      />
+    </Tabs>
+  );
+}
+```
+
+
+--- app/user/(tabs)/home.tsx ---
+```tsx
+import * as Location from "expo-location";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { Alert, StyleSheet, Text, View } from "react-native";
+import MapView, { Marker, Polyline } from "react-native-maps";
+
+import {
+    fetchDirectionsAlternatives,
+    type DirectionsRouteOption,
+} from "../../../src/api/directions";
+import RideRequestCard from "../../../src/components/home/RideRequestCard";
+import RouteEndpointsMarkers from "../../../src/components/home/RouteEndpointsMarkers";
+
+type Coords = { latitude: number; longitude: number } | null;
+
+export default function UserHomeTab() {
+  const mapRef = useRef<MapView | null>(null);
+
+  const [origin, setOrigin] = useState("");
+  const [destination, setDestination] = useState("");
+  const [currentLocation, setCurrentLocation] = useState<Coords>(null);
+  const [originIsCurrentLocation, setOriginIsCurrentLocation] = useState(false);
+
+  const [routes, setRoutes] = useState<DirectionsRouteOption[]>([]);
+  const [highlightedRouteIndex, setHighlightedRouteIndex] = useState(-1);
+  const [selectedRouteIndex, setSelectedRouteIndex] = useState(-1);
+  const [routesLoading, setRoutesLoading] = useState(false);
+  const [selectPulse, setSelectPulse] = useState(false);
+
+  const [region, setRegion] = useState({
+    latitude: 9.9312,
+    longitude: 76.2673,
+    latitudeDelta: 0.05,
+    longitudeDelta: 0.05,
+  });
+
+  const directionsApiKey = useMemo(() => {
+    return (
+      process.env.EXPO_PUBLIC_GOOGLE_DIRECTIONS_API_KEY ||
+      process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY ||
+      ""
+    );
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      let { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== "granted") {
+        Alert.alert(
+          "Permission Denied",
+          "We need location access to set your origin.",
+        );
+        return;
+      }
+
+      try {
+        let location = await Location.getCurrentPositionAsync({});
+        const coords = {
+          latitude: location.coords.latitude,
+          longitude: location.coords.longitude,
+        };
+        setCurrentLocation(coords);
+        const nextRegion = {
+          latitude: coords.latitude,
+          longitude: coords.longitude,
+          latitudeDelta: 0.05,
+          longitudeDelta: 0.05,
+        };
+        setRegion(nextRegion);
+        mapRef.current?.animateToRegion(nextRegion, 500);
+      } catch {
+        // Location fetch failed silently on initial load
+      }
+    })();
+  }, []);
+
+  const handleSetCurrentLocation = async () => {
+    try {
+      let location = await Location.getCurrentPositionAsync({});
+      const coords = {
+        latitude: location.coords.latitude,
+        longitude: location.coords.longitude,
+      };
+      setCurrentLocation(coords);
+      const nextRegion = {
+        latitude: coords.latitude,
+        longitude: coords.longitude,
+        latitudeDelta: 0.05,
+        longitudeDelta: 0.05,
+      };
+      setRegion(nextRegion);
+
+      const reverseGeocode = await Location.reverseGeocodeAsync({
+        latitude: coords.latitude,
+        longitude: coords.longitude,
+      });
+
+      if (reverseGeocode.length > 0) {
+        const place = reverseGeocode[0];
+        const addressParts = [
+          place.name,
+          place.street,
+          place.city,
+          place.region,
+        ].filter(Boolean);
+        const address = addressParts.join(", ") || "My Current Location";
+        setOrigin(address);
+      } else {
+        setOrigin("My Current Location");
+      }
+      setOriginIsCurrentLocation(true);
+
+      mapRef.current?.animateToRegion(nextRegion, 500);
+    } catch {
+      Alert.alert("Error", "Could not fetch your current location.");
+    }
+  };
+
+  const handleConfirm = async () => {
+    if (!origin || !destination) {
+      Alert.alert("Missing Info", "Please enter both origin and destination.");
+      return;
+    }
+
+    try {
+      setRoutesLoading(true);
+      setRoutes([]);
+      setSelectedRouteIndex(-1);
+      setHighlightedRouteIndex(-1);
+
+      const originParam =
+        originIsCurrentLocation && currentLocation ? currentLocation : origin;
+      const result = await fetchDirectionsAlternatives({
+        origin: originParam,
+        destination,
+        apiKey: directionsApiKey,
+        maxRoutes: 3,
+      });
+
+      if (!result.length) {
+        Alert.alert("No Routes", "No routes were returned for this trip.");
+        return;
+      }
+
+      setRoutes(result);
+      setSelectedRouteIndex(0);
+      setHighlightedRouteIndex(0);
+    } catch (e: any) {
+      Alert.alert("Directions Error", e?.message || "Could not fetch routes.");
+    } finally {
+      setRoutesLoading(false);
+    }
+  };
+
+  const handleOriginChange = (value: string) => {
+    setOrigin(value);
+    setOriginIsCurrentLocation(false);
+  };
+
+  const activeIndex =
+    selectedRouteIndex >= 0 ? selectedRouteIndex : highlightedRouteIndex;
+
+  useEffect(() => {
+    if (selectedRouteIndex < 0) return;
+    setSelectPulse(true);
+    const t = setTimeout(() => setSelectPulse(false), 420);
+    return () => clearTimeout(t);
+  }, [selectedRouteIndex]);
+
+  useEffect(() => {
+    if (!mapRef.current) return;
+    if (activeIndex < 0) return;
+    const coords = routes[activeIndex]?.coordinates;
+    if (!coords || coords.length === 0) return;
+
+    mapRef.current.fitToCoordinates(coords, {
+      edgePadding: { top: 80, right: 60, bottom: 320, left: 60 },
+      animated: true,
+    });
+  }, [activeIndex, routes]);
+
+  return (
+    <View className="flex-1 bg-white relative">
+      <MapView
+        ref={(r) => {
+          mapRef.current = r;
+        }}
+        style={StyleSheet.absoluteFillObject}
+        initialRegion={region}
+        onRegionChangeComplete={setRegion}
+        showsUserLocation
+        showsMyLocationButton={false}
+      >
+        {selectedRouteIndex >= 0 &&
+        routes[selectedRouteIndex]?.coordinates?.length ? (
+          <RouteEndpointsMarkers
+            start={routes[selectedRouteIndex].coordinates[0]}
+            end={
+              routes[selectedRouteIndex].coordinates[
+                routes[selectedRouteIndex].coordinates.length - 1
+              ]
+            }
+            pulse={selectPulse}
+          />
+        ) : null}
+
+        {routes.map((route, index) => {
+          const isSelected = index === selectedRouteIndex;
+
+          const strokeColor = isSelected ? "#1565C0" : "#90CAF9";
+          const strokeWidth = isSelected ? 6 : 4;
+          const zIndex = isSelected ? 30 : 10;
+
+          return (
+            <Polyline
+              key={index}
+              coordinates={route.coordinates}
+              strokeColor={strokeColor}
+              strokeWidth={strokeWidth}
+              zIndex={zIndex}
+              tappable
+              onPress={() => {
+                setSelectedRouteIndex(index);
+                setHighlightedRouteIndex(index);
+              }}
+            />
+          );
+        })}
+
+        {selectedRouteIndex >= 0 &&
+          routes[selectedRouteIndex]?.coordinates?.length &&
+          routes[selectedRouteIndex]?.durationText &&
+          (() => {
+            const route = routes[selectedRouteIndex];
+            const midIndex = Math.floor(route.coordinates.length / 2);
+            const mid = route.coordinates[midIndex];
+
+            if (!mid?.latitude || !mid?.longitude) return null;
+
+            return (
+              <Marker
+                coordinate={mid}
+                tracksViewChanges={false}
+                zIndex={50}
+                onPress={() => {
+                  setHighlightedRouteIndex(selectedRouteIndex);
+                }}
+              >
+                <View style={{ alignItems: "center" }}>
+                  <View
+                    style={{
+                      backgroundColor: "#1565C0",
+                      paddingHorizontal: 16,
+                      paddingVertical: 8,
+                      borderRadius: 20,
+                      borderWidth: 1.5,
+                      borderColor: "#1565C0",
+                      minWidth: 60,
+                      alignItems: "center",
+                    }}
+                  >
+                    <Text
+                      style={{
+                        fontSize: 13,
+                        fontWeight: "700",
+                        color: "#ffffff",
+                        textAlign: "center",
+                      }}
+                      numberOfLines={1}
+                    >
+                      {route.durationText}
+                    </Text>
+                  </View>
+                </View>
+              </Marker>
+            );
+          })()}
+      </MapView>
+
+      <View className="absolute top-12 left-0 right-0 items-center">
+        <View className="bg-white/80 px-6 py-2 rounded-full">
+          <Text className="text-xl font-bold text-gray-800">Kerides</Text>
+        </View>
+      </View>
+
+      <RideRequestCard
+        origin={origin}
+        destination={destination}
+        setOrigin={handleOriginChange}
+        setDestination={setDestination}
+        onSetCurrentLocation={handleSetCurrentLocation}
+        onDestinationSelected={handleConfirm}
+        loading={routesLoading}
+        placesApiKey={directionsApiKey}
+        routeSelected={selectedRouteIndex >= 0}
+      />
+    </View>
+  );
+}
+```
+
+
+--- app/user/(tabs)/history.tsx ---
+```tsx
+import React from "react";
+import { Text, View } from "react-native";
+
+export default function HistoryTab() {
+  return (
+    <View className="flex-1 bg-white items-center justify-center px-6">
+      <Text className="text-2xl font-bold text-gray-900">History</Text>
+      <Text className="mt-2 text-sm text-gray-500">
+        Your recent activity will appear here.
+      </Text>
+    </View>
+  );
+}
+```
+
+
+--- app/user/(tabs)/accounts.tsx ---
+```tsx
+import { useRouter } from "expo-router";
+import React from "react";
+import { Text, View } from "react-native";
+import { useAuth } from "../../../src/auth/AuthProvider";
+import Button from "../../../src/components/ui/Button";
+
+export default function AccountsTab() {
+  const { signOut } = useAuth();
+  const router = useRouter();
+
+  async function handleSignOut() {
+    await signOut();
+    router.replace("/user/login");
+  }
+
+  return (
+    <View className="flex-1 bg-white px-6 pt-8">
+      <Text className="text-2xl font-bold text-gray-900">Accounts</Text>
+      <Text className="mt-2 text-sm text-gray-500">
+        Manage your account and settings.
+      </Text>
+
+      <View className="mt-8">
+        <Button onPress={handleSignOut} accessibilityLabel="Sign out">
+          Sign Out
+        </Button>
+      </View>
+    </View>
+  );
+}
+```
+
+
+--- app/driver/_layout.tsx ---
+```tsx
+import { Redirect, Stack } from "expo-router";
+import React from "react";
+import { useAuth } from "../../src/auth/AuthProvider";
+
+/**
+ * Guard: only authenticated users with role === DRIVER may enter.
+ * - Not logged in → redirect to driver login
+ * - Logged in as USER → redirect to user home
+ */
+export default function DriverLayout() {
+  const { isLoading, token, role } = useAuth();
+
+  if (isLoading) return null;
+
+  if (!token) return <Redirect href="/driver/login" />;
+  if (role !== "DRIVER") return <Redirect href="/user/home" />;
+
+  return <Stack screenOptions={{ headerShown: false }} />;
+}
+```
+
+
+--- app/driver/(tabs)/_layout.tsx ---
+```tsx
+import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { Tabs } from "expo-router";
+import React from "react";
+
+export default function DriverTabsLayout() {
+  return (
+    <Tabs
+      screenOptions={{
+        headerShown: false,
+        tabBarActiveTintColor: "#16A34A",
+        tabBarStyle: { height: 64, paddingBottom: 8 },
+        tabBarLabelStyle: { fontSize: 12 },
+      }}
+    >
+      <Tabs.Screen
+        name="home"
+        options={{
+          title: "Home",
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons
+              name="home-outline"
+              size={size ?? 24}
+              color={color}
+            />
+          ),
+        }}
+      />
+
+      <Tabs.Screen
+        name="bookings"
+        options={{
+          title: "Bookings",
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons
+              name="clipboard-list-outline"
+              size={size ?? 24}
+              color={color}
+            />
+          ),
+        }}
+      />
+
+      <Tabs.Screen
+        name="profile"
+        options={{
+          title: "Profile",
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons
+              name="account-circle-outline"
+              size={size ?? 24}
+              color={color}
+            />
+          ),
+        }}
+      />
+    </Tabs>
+  );
+}
+```
+
+
+--- app/driver/(tabs)/home.tsx ---
+```tsx
+import React from "react";
+import { Text, View } from "react-native";
+
+export default function DriverHomeTab() {
+  return (
+    <View className="flex-1 bg-white items-center justify-center px-6">
+      <Text className="text-2xl font-bold text-gray-900">Driver Home</Text>
+      <Text className="mt-2 text-sm text-gray-500 text-center">
+        Incoming ride requests and your current trip will appear here.
+      </Text>
+    </View>
+  );
+}
+```
+
+
+--- app/driver/(tabs)/bookings.tsx ---
+```tsx
+import React from "react";
+import { Text, View } from "react-native";
+
+export default function BookingsTab() {
+  return (
+    <View className="flex-1 bg-white items-center justify-center px-6">
+      <Text className="text-2xl font-bold text-gray-900">Bookings</Text>
+      <Text className="mt-2 text-sm text-gray-500 text-center">
+        Your assigned and completed trips will appear here.
+      </Text>
+    </View>
+  );
+}
+```
+
+
+--- app/driver/(tabs)/profile.tsx ---
+```tsx
+import { useRouter } from "expo-router";
+import React from "react";
+import { Text, View } from "react-native";
+import { useAuth } from "../../../src/auth/AuthProvider";
+import Button from "../../../src/components/ui/Button";
+
+export default function ProfileTab() {
+  const { signOut } = useAuth();
+  const router = useRouter();
+
+  async function handleSignOut() {
+    await signOut();
+    router.replace("/driver/login");
+  }
+
+  return (
+    <View className="flex-1 bg-white px-6 pt-8">
+      <Text className="text-2xl font-bold text-gray-900">Profile</Text>
+      <Text className="mt-2 text-sm text-gray-500">
+        Manage your driver profile and settings.
+      </Text>
+
+      <View className="mt-8">
+        <Button onPress={handleSignOut} accessibilityLabel="Sign out">
+          Sign Out
+        </Button>
+      </View>
+    </View>
+  );
+}
+```
+
+
+--- src/auth/session.ts ---
+```typescript
+import * as SecureStore from "expo-secure-store";
+import { Role } from "../api/auth";
+
+const TOKEN_KEY = "auth_token";
+const ROLE_KEY = "auth_role";
+const LAST_ROLE_KEY = "last_role";
+
+export async function getToken(): Promise<string | null> {
+  return SecureStore.getItemAsync(TOKEN_KEY);
+}
+
+export async function setToken(token: string): Promise<void> {
+  await SecureStore.setItemAsync(TOKEN_KEY, token);
+}
+
+export async function getRole(): Promise<Role | null> {
+  const v = await SecureStore.getItemAsync(ROLE_KEY);
+  return (v as Role) ?? null;
+}
+
+export async function setRole(role: Role): Promise<void> {
+  await SecureStore.setItemAsync(ROLE_KEY, role);
+  await SecureStore.setItemAsync(LAST_ROLE_KEY, role);
+}
+
+export async function getLastRole(): Promise<Role | null> {
+  const v = await SecureStore.getItemAsync(LAST_ROLE_KEY);
+  return (v as Role) ?? null;
+}
+
+export async function setSession(token: string, role: Role): Promise<void> {
+  await setToken(token);
+  await setRole(role);
+}
+
+export async function clearSession(): Promise<void> {
+  await SecureStore.deleteItemAsync(TOKEN_KEY);
+  await SecureStore.deleteItemAsync(ROLE_KEY);
+  // lastRole intentionally NOT cleared
+}
+
+export async function isLoggedIn(): Promise<boolean> {
+  const token = await getToken();
+  return !!token;
+}
+```
+
+
+--- src/auth/AuthProvider.tsx ---
+```tsx
+import React, {
+    createContext,
+    useCallback,
+    useContext,
+    useEffect,
+    useMemo,
+    useState,
+} from "react";
+import { Role } from "../api/auth";
+import {
+    clearSession as clearPersistedSession,
+    getLastRole,
+    getRole,
+    getToken,
+    setSession as persistSession,
+} from "./session";
+
+type AuthState = {
+  isLoading: boolean;
+  token: string | null;
+  role: Role | null;
+  lastRole: Role | null;
+};
+
+type AuthActions = {
+  signIn: (token: string, role: Role) => Promise<void>;
+  signOut: () => Promise<void>;
+};
+
+type AuthContextValue = AuthState & AuthActions;
+
+const AuthContext = createContext<AuthContextValue | null>(null);
+
+export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const [state, setState] = useState<AuthState>({
+    isLoading: true,
+    token: null,
+    role: null,
+    lastRole: null,
+  });
+
+  useEffect(() => {
+    (async () => {
+      const [token, role, lastRole] = await Promise.all([
+        getToken(),
+        getRole(),
+        getLastRole(),
+      ]);
+      setState({
+        isLoading: false,
+        token,
+        role,
+        lastRole,
+      });
+    })();
+  }, []);
+
+  const signIn = useCallback(async (token: string, role: Role) => {
+    await persistSession(token, role);
+    setState((prev) => ({ ...prev, token, role, lastRole: role }));
+  }, []);
+
+  const signOut = useCallback(async () => {
+    await clearPersistedSession();
+    setState((prev) => ({
+      ...prev,
+      token: null,
+      role: null,
+    }));
+  }, []);
+
+  const value = useMemo<AuthContextValue>(
+    () => ({ ...state, signIn, signOut }),
+    [state, signIn, signOut],
+  );
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+}
+
+export function useAuth(): AuthContextValue {
+  const ctx = useContext(AuthContext);
+  if (!ctx) {
+    throw new Error("useAuth must be used within an <AuthProvider>");
+  }
+  return ctx;
+}
+```
+
+
+--- src/api/auth.ts ---
+```typescript
+export type Role = "USER" | "DRIVER" | "ADMIN";
+
+export type RegisterRequest = {
+  email: string;
+  password: string;
+  fullName: string;
+  phoneNumber?: string;
+  role: Role;
+};
+
+export type RegisterResponse = {
+  id: string;
+  email: string;
+  fullName: string;
+  role: Role;
+};
+
+export async function register(
+  payload: RegisterRequest,
+): Promise<RegisterResponse> {
+  const res = await fetch("/auth/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    const message =
+      (body && (body.message || body.error)) ||
+      (await res.text()) ||
+      "Registration failed";
+    throw new Error(message);
+  }
+
+  return res.json();
+}
+
+export type LoginRequest = {
+  email: string;
+  password: string;
+  role?: Role;
+};
+
+export type LoginResponse = {
+  token?: string;
+  user?: {
+    id: string;
+    email: string;
+    fullName?: string;
+    role: Role;
+  };
+};
+
+export async function login(payload: LoginRequest): Promise<LoginResponse> {
+  const res = await fetch("/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    const message =
+      (body && (body.message || body.error)) ||
+      (await res.text()) ||
+      "Login failed";
+    throw new Error(message);
+  }
+
+  return res.json();
+}
+```
+
+
+--- src/api/directions.ts ---
+```typescript
+import { decodePolyline, type LatLng } from "../utils/decodePolyline";
+
+export type DirectionsRouteOption = {
+  summary: string;
+  distanceText: string;
+  durationText: string;
+  coordinates: LatLng[];
+};
+
+type DirectionsApiRoute = {
+  summary?: string;
+  overview_polyline?: { points: string };
+  legs?: {
+    distance?: { text?: string };
+    duration?: { text?: string };
+  }[];
+};
+
+type DirectionsApiResponse = {
+  status: string;
+  error_message?: string;
+  routes?: DirectionsApiRoute[];
+};
+
+export type DirectionsOrigin = string | { latitude: number; longitude: number };
+
+function originToParam(origin: DirectionsOrigin): string {
+  if (typeof origin === "string") return origin;
+  return `${origin.latitude},${origin.longitude}`;
+}
+
+export async function fetchDirectionsAlternatives(opts: {
+  origin: DirectionsOrigin;
+  destination: string;
+  apiKey: string;
+  maxRoutes?: number;
+}): Promise<DirectionsRouteOption[]> {
+  const { origin, destination, apiKey, maxRoutes = 3 } = opts;
+
+  if (!apiKey) {
+    throw new Error(
+      "Missing Google Directions API key. Set EXPO_PUBLIC_GOOGLE_DIRECTIONS_API_KEY (or EXPO_PUBLIC_GOOGLE_MAPS_API_KEY) in .env.",
+    );
+  }
+  if (!destination?.trim()) throw new Error("Destination is required");
+
+  const originParam = encodeURIComponent(originToParam(origin));
+  const destParam = encodeURIComponent(destination);
+  const keyParam = encodeURIComponent(apiKey);
+
+  const url =
+    `https://maps.googleapis.com/maps/api/directions/json?origin=${originParam}` +
+    `&destination=${destParam}` +
+    `&mode=driving&alternatives=true&key=${keyParam}`;
+
+  const res = await fetch(url);
+  const data = (await res.json()) as DirectionsApiResponse;
+
+  if (!res.ok) {
+    throw new Error(
+      data?.error_message || `Directions request failed (${res.status})`,
+    );
+  }
+
+  if (!data || data.status !== "OK") {
+    throw new Error(
+      data?.error_message || `Directions error: ${data?.status || "UNKNOWN"}`,
+    );
+  }
+
+  const routes = (data.routes ?? []).slice(0, maxRoutes);
+
+  return routes
+    .map((route) => {
+      const leg = route.legs?.[0];
+      const points = route.overview_polyline?.points ?? "";
+      const coordinates = decodePolyline(points);
+
+      return {
+        summary: route.summary || "",
+        distanceText: leg?.distance?.text || "",
+        durationText: leg?.duration?.text || "",
+        coordinates,
+      } satisfies DirectionsRouteOption;
+    })
+    .filter((r) => r.coordinates.length > 0);
+}
+```
+
+
+--- src/components/auth/LoginForm.tsx ---
+```tsx
+import { Feather } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
+import React, { useState } from "react";
+import { Alert, Linking, Text, View } from "react-native";
+import { login, LoginRequest, Role } from "../../api/auth";
+import { useAuth } from "../../auth/AuthProvider";
+import Button from "../ui/Button";
+import TextField from "../ui/TextField";
+
+type Props = {
+  role?: Role;
+  onSuccess?: (resp: any) => void;
+};
+
+function isEmail(value: string) {
+  return /\S+@\S+\.\S+/.test(value);
+}
+
+export default function LoginForm({ role = "USER", onSuccess }: Props) {
+  const router = useRouter();
+  const { signIn } = useAuth();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [errors, setErrors] = useState<Record<string, string | null>>({});
+  const [loading, setLoading] = useState(false);
+
+  function validate() {
+    const e: typeof errors = {};
+    if (!isEmail(email)) e.email = "Enter a valid email";
+    if (!password) e.password = "Enter your password";
+    setErrors(e);
+    return Object.keys(e).length === 0;
+  }
+
+  async function onSubmit() {
+    if (!validate()) return;
+    setLoading(true);
+
+    const payload: LoginRequest = {
+      email: email.trim().toLowerCase(),
+      password,
+      role,
+    };
+
+    try {
+      const resp = await login(payload);
+      const token = resp.token || "";
+      await signIn(token, role);
+      onSuccess?.(resp);
+
+      if (role === "DRIVER") {
+        router.replace("/driver/home");
+      } else {
+        router.replace("/user/home");
+      }
+    } catch (err: any) {
+      Alert.alert("Login failed", err?.message || String(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <View className="w-full max-w-md">
+      <View className="mb-4">
+        <TextField
+          label="Email Address"
+          value={email}
+          onChangeText={setEmail}
+          placeholder="you@example.com"
+          keyboardType="email-address"
+          autoComplete="email"
+          textContentType="emailAddress"
+          error={errors.email || null}
+          leftIcon={<Feather name="mail" size={18} color="#6B7280" />}
+        />
+      </View>
+
+      <View className="mb-4">
+        <TextField
+          label="Password"
+          value={password}
+          onChangeText={setPassword}
+          placeholder="Enter your password"
+          secureTextEntry={!showPassword}
+          textContentType="password"
+          error={errors.password || null}
+          leftIcon={<Feather name="lock" size={18} color="#6B7280" />}
+          rightIcon={
+            <Feather
+              name={showPassword ? "eye-off" : "eye"}
+              size={18}
+              color="#6B7280"
+              onPress={() => setShowPassword((v) => !v)}
+            />
+          }
+        />
+      </View>
+
+      <View className="flex-row justify-between items-center mb-4">
+        <Text className="text-sm text-gray-500">&nbsp;</Text>
+        <Text
+          className="text-sm text-primary-600"
+          onPress={() => Linking.openURL("/forgot-password")}
+        >
+          Forgot password?
+        </Text>
+      </View>
+
+      <Button onPress={onSubmit} loading={loading} accessibilityLabel="Sign in">
+        Sign in
+      </Button>
+    </View>
+  );
+}
+```
+
+
+--- src/components/auth/RegisterForm.tsx ---
+```tsx
+import { Feather } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
+import React, { useState } from "react";
+import { Alert, Linking, Pressable, Text, View } from "react-native";
+import { login, register, RegisterRequest, Role } from "../../api/auth";
+import { useAuth } from "../../auth/AuthProvider";
+import Button from "../ui/Button";
+import Card from "../ui/Card";
+import Checkbox from "../ui/Checkbox";
+import TextField from "../ui/TextField";
+
+type Props = {
+  role?: Role;
+};
+
+function isEmail(value: string) {
+  return /\S+@\S+\.\S+/.test(value);
+}
+
+function isStrongPassword(value: string) {
+  return value.length >= 8;
+}
+
+export default function RegisterForm({ role = "USER" }: Props) {
+  const router = useRouter();
+  const { signIn } = useAuth();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [fullName, setFullName] = useState("");
+  const [phoneNumber, setPhoneNumber] = useState("");
+
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [acceptTerms, setAcceptTerms] = useState(false);
+
+  const [errors, setErrors] = useState<Record<string, string | null>>({});
+  const [loading, setLoading] = useState(false);
+
+  function validate() {
+    const e: typeof errors = {};
+    if (!fullName.trim()) e.fullName = "Full name is required";
+    if (!isEmail(email)) e.email = "Enter a valid email";
+    if (!isStrongPassword(password))
+      e.password = "Password must be at least 8 characters";
+    if (password !== confirmPassword)
+      e.confirmPassword = "Passwords do not match";
+    if (!acceptTerms) e.terms = "You must accept the Terms of Service";
+    setErrors(e);
+    return Object.keys(e).length === 0;
+  }
+
+  async function onSubmit() {
+    if (!validate()) return;
+    setLoading(true);
+
+    const payload: RegisterRequest = {
+      email: email.trim().toLowerCase(),
+      password,
+      fullName: fullName.trim(),
+      phoneNumber: phoneNumber.trim() || undefined,
+      role,
+    };
+
+    try {
+      await register(payload);
+
+      const loginResp = await login({
+        email: payload.email,
+        password: payload.password,
+        role,
+      });
+      const token = loginResp.token || "";
+      await signIn(token, role);
+
+      if (role === "DRIVER") {
+        router.replace("/driver/home");
+      } else {
+        router.replace("/user/home");
+      }
+    } catch (err: any) {
+      Alert.alert("Registration failed", err?.message || String(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <Card className="w-full max-w-md">
+      <View className="mb-4">
+        <TextField
+          label="Full name"
+          value={fullName}
+          onChangeText={setFullName}
+          placeholder="John Doe"
+          autoComplete="name"
+          textContentType="name"
+          error={errors.fullName || null}
+          leftIcon={<Feather name="user" size={18} color="#6B7280" />}
+        />
+      </View>
+
+      <View className="mb-4">
+        <TextField
+          label="Email Address"
+          value={email}
+          onChangeText={setEmail}
+          placeholder="your@email.com"
+          keyboardType="email-address"
+          autoComplete="email"
+          textContentType="emailAddress"
+          error={errors.email || null}
+          leftIcon={<Feather name="mail" size={18} color="#6B7280" />}
+        />
+      </View>
+
+      <View className="mb-4">
+        <TextField
+          label="Phone Number"
+          value={phoneNumber}
+          onChangeText={setPhoneNumber}
+          placeholder="9876543210"
+          keyboardType="phone-pad"
+          autoComplete="tel"
+          leftIcon={<Feather name="phone" size={18} color="#6B7280" />}
+        />
+      </View>
+
+      <View className="mb-4">
+        <TextField
+          label="Password"
+          value={password}
+          onChangeText={setPassword}
+          placeholder="Create a strong password"
+          secureTextEntry={!showPassword}
+          textContentType="newPassword"
+          error={errors.password || null}
+          leftIcon={<Feather name="lock" size={18} color="#6B7280" />}
+          rightIcon={
+            <Pressable
+              onPress={() => setShowPassword((v) => !v)}
+              accessibilityLabel={
+                showPassword ? "Hide password" : "Show password"
+              }
+            >
+              <Feather
+                name={showPassword ? "eye-off" : "eye"}
+                size={18}
+                color="#6B7280"
+              />
+            </Pressable>
+          }
+        />
+      </View>
+
+      <View className="mb-4">
+        <TextField
+          label="Confirm Password"
+          value={confirmPassword}
+          onChangeText={setConfirmPassword}
+          placeholder="Confirm your password"
+          secureTextEntry={!showConfirm}
+          textContentType="password"
+          error={errors.confirmPassword || null}
+          leftIcon={<Feather name="lock" size={18} color="#6B7280" />}
+          rightIcon={
+            <Pressable
+              onPress={() => setShowConfirm((v) => !v)}
+              accessibilityLabel={
+                showConfirm ? "Hide password" : "Show password"
+              }
+            >
+              <Feather
+                name={showConfirm ? "eye-off" : "eye"}
+                size={18}
+                color="#6B7280"
+              />
+            </Pressable>
+          }
+        />
+      </View>
+
+      <View className="mb-4">
+        <Checkbox checked={acceptTerms} onValueChange={setAcceptTerms}>
+          <Text>
+            I agree to the{" "}
+            <Text
+              className="text-primary-600 font-medium"
+              onPress={() => Linking.openURL("https://example.com/terms")}
+            >
+              Terms of Service
+            </Text>{" "}
+            and{" "}
+            <Text
+              className="text-primary-600 font-medium"
+              onPress={() => Linking.openURL("https://example.com/privacy")}
+            >
+              Privacy Policy
+            </Text>
+          </Text>
+        </Checkbox>
+        {errors.terms ? (
+          <Text className="mt-2 text-sm text-red-600" accessibilityRole="alert">
+            {errors.terms}
+          </Text>
+        ) : null}
+      </View>
+
+      <View className="mt-2">
+        <Button
+          onPress={onSubmit}
+          loading={loading}
+          accessibilityLabel="Create account"
+        >
+          Create Account
+        </Button>
+      </View>
+    </Card>
+  );
+}
+```
+
+
+--- src/components/home/PlacesAutocompleteInput.tsx ---
+```tsx
+import { Feather } from "@expo/vector-icons";
+import React, { useEffect, useRef } from "react";
+import { Pressable, StyleSheet, Text, View } from "react-native";
+import {
+  GooglePlacesAutocomplete,
+  GooglePlacesAutocompleteRef,
+} from "react-native-google-places-autocomplete";
+
+type PlaceResult = {
+  description: string;
+  place_id: string;
+  geometry?: {
+    location: {
+      lat: number;
+      lng: number;
+    };
+  };
+};
+
+type Props = {
+  label?: string;
+  placeholder?: string;
+  value: string;
+  onChangeText: (text: string) => void;
+  onPlaceSelected?: (place: PlaceResult) => void;
+  apiKey: string;
+  icon?: React.ComponentProps<typeof Feather>["name"];
+  rightIconName?: React.ComponentProps<typeof Feather>["name"];
+  onRightIconPress?: () => void;
+};
+
+export default function PlacesAutocompleteInput({
+  label,
+  placeholder,
+  value,
+  onChangeText,
+  onPlaceSelected,
+  apiKey,
+  icon = "map-pin",
+  rightIconName,
+  onRightIconPress,
+}: Props) {
+  const ref = useRef<GooglePlacesAutocompleteRef | null>(null);
+
+  useEffect(() => {
+    if (ref.current) {
+      const currentText = ref.current.getAddressText();
+      if (value !== currentText) {
+        ref.current.setAddressText(value);
+      }
+    }
+  }, [value]);
+
+  return (
+    <View style={styles.container}>
+      {label ? <Text style={styles.label}>{label}</Text> : null}
+
+      <View style={styles.inputRow}>
+        <View style={styles.leftIcon}>
+          <Feather name={icon} size={18} color="#6B7280" />
+        </View>
+
+        <GooglePlacesAutocomplete
+          ref={ref}
+          placeholder={placeholder || "Search"}
+          minLength={2}
+          fetchDetails
+          onPress={(data, details = null) => {
+            const description = data.description || "";
+
+            if (ref.current) {
+              ref.current.setAddressText(description);
+            }
+
+            onChangeText(description);
+
+            if (onPlaceSelected && details?.geometry?.location) {
+              onPlaceSelected({
+                description,
+                place_id: data.place_id || "",
+                geometry: {
+                  location: {
+                    lat: details.geometry.location.lat,
+                    lng: details.geometry.location.lng,
+                  },
+                },
+              });
+            }
+          }}
+          onFail={() => {}}
+          onNotFound={() => {}}
+          textInputProps={{
+            onChangeText: (text) => {
+              onChangeText(text);
+            },
+            placeholderTextColor: "#9CA3AF",
+          }}
+          query={{
+            key: apiKey,
+            language: "en",
+            components: "country:in",
+          }}
+          requestUrl={{
+            useOnPlatform: "all",
+            url: "https://maps.googleapis.com/maps/api",
+          }}
+          keyboardShouldPersistTaps="handled"
+          listViewDisplayed="auto"
+          keepResultsAfterBlur={true}
+          styles={{
+            container: { flex: 1, zIndex: 1000 },
+            textInputContainer: {
+              backgroundColor: "transparent",
+            },
+            textInput: {
+              height: 40,
+              color: "#111827",
+              fontSize: 16,
+              backgroundColor: "transparent",
+              paddingHorizontal: 0,
+            },
+            listView: {
+              position: "absolute",
+              top: 44,
+              left: -40,
+              right: -48,
+              backgroundColor: "#fff",
+              borderRadius: 8,
+              elevation: 10,
+              shadowColor: "#000",
+              shadowOpacity: 0.15,
+              shadowRadius: 8,
+              shadowOffset: { width: 0, height: 2 },
+              zIndex: 9999,
+            },
+            row: {
+              paddingVertical: 12,
+              paddingHorizontal: 16,
+            },
+            description: {
+              fontSize: 14,
+              color: "#374151",
+            },
+            separator: {
+              height: 1,
+              backgroundColor: "#E5E7EB",
+            },
+          }}
+          enablePoweredByContainer={false}
+          debounce={300}
+        />
+
+        {rightIconName ? (
+          <Pressable
+            onPress={onRightIconPress}
+            style={styles.rightIcon}
+            accessibilityLabel="set-current-location"
+          >
+            <Feather name={rightIconName} size={18} color="#6B7280" />
+          </Pressable>
+        ) : null}
+      </View>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    width: "100%",
+    overflow: "visible",
+    zIndex: 100,
+  },
+  label: {
+    marginBottom: 4,
+    fontSize: 14,
+    fontWeight: "500",
+    color: "#374151",
+  },
+  inputRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#D1D5DB",
+    borderRadius: 6,
+    backgroundColor: "#fff",
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    zIndex: 10,
+    overflow: "visible",
+  },
+  leftIcon: {
+    marginRight: 12,
+  },
+  rightIcon: {
+    marginLeft: 12,
+  },
+});
+```
+
+
+--- src/components/home/RideRequestCard.tsx ---
+```tsx
+import React, { useEffect, useRef } from "react";
+import {
+  Animated,
+  Dimensions,
+  Keyboard,
+  PanResponder,
+  Platform,
+  Text,
+  View,
+} from "react-native";
+import PlacesAutocompleteInput from "./PlacesAutocompleteInput";
+import VehicleTypeSelector from "./VehicleTypeSelector";
+
+const { height: SCREEN_HEIGHT } = Dimensions.get("window");
+const COLLAPSED_HEIGHT = 280;
+const ROUTE_SELECTED_HEIGHT = SCREEN_HEIGHT * 0.65;
+const EXPANDED_HEIGHT = SCREEN_HEIGHT * 0.65;
+
+type Props = {
+  origin: string;
+  destination: string;
+  onSetCurrentLocation: () => void;
+  setOrigin: (v: string) => void;
+  setDestination: (v: string) => void;
+  onDestinationSelected: () => void;
+  loading?: boolean;
+  placesApiKey?: string;
+  routeSelected?: boolean;
+};
+
+export default function RideRequestCard({
+  origin,
+  destination,
+  onSetCurrentLocation,
+  setOrigin,
+  setDestination,
+  onDestinationSelected,
+  loading = false,
+  placesApiKey = "",
+  routeSelected = false,
+}: Props) {
+  const animatedBottom = useRef(new Animated.Value(0)).current;
+  const animatedHeight = useRef(new Animated.Value(COLLAPSED_HEIGHT)).current;
+  const currentHeight = useRef(COLLAPSED_HEIGHT);
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: (_, gestureState) => {
+        return Math.abs(gestureState.dy) > 5;
+      },
+      onPanResponderMove: (_, gestureState) => {
+        const newHeight = currentHeight.current - gestureState.dy;
+        const clampedHeight = Math.max(
+          COLLAPSED_HEIGHT,
+          Math.min(EXPANDED_HEIGHT, newHeight),
+        );
+        animatedHeight.setValue(clampedHeight);
+      },
+      onPanResponderRelease: (_, gestureState) => {
+        const newHeight = currentHeight.current - gestureState.dy;
+        const velocity = gestureState.vy;
+
+        let targetHeight: number;
+        if (velocity < -0.5) {
+          targetHeight = EXPANDED_HEIGHT;
+        } else if (velocity > 0.5) {
+          targetHeight = COLLAPSED_HEIGHT;
+        } else {
+          const midpoint = (COLLAPSED_HEIGHT + EXPANDED_HEIGHT) / 2;
+          targetHeight =
+            newHeight > midpoint ? EXPANDED_HEIGHT : COLLAPSED_HEIGHT;
+        }
+
+        currentHeight.current = targetHeight;
+
+        Animated.spring(animatedHeight, {
+          toValue: targetHeight,
+          useNativeDriver: false,
+          bounciness: 4,
+        }).start();
+      },
+    }),
+  ).current;
+
+  useEffect(() => {
+    const showEvent =
+      Platform.OS === "android" ? "keyboardDidShow" : "keyboardWillShow";
+    const hideEvent =
+      Platform.OS === "android" ? "keyboardDidHide" : "keyboardWillHide";
+
+    const onShow = (e: any) => {
+      const toValue = e?.endCoordinates?.height ?? 300;
+      Animated.timing(animatedBottom, {
+        toValue,
+        duration: e?.duration ?? 250,
+        useNativeDriver: false,
+      }).start();
+    };
+
+    const onHide = (e: any) => {
+      Animated.timing(animatedBottom, {
+        toValue: 0,
+        duration: e?.duration ?? 250,
+        useNativeDriver: false,
+      }).start();
+    };
+
+    const showSub = Keyboard.addListener(showEvent, onShow);
+    const hideSub = Keyboard.addListener(hideEvent, onHide);
+
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, [animatedBottom]);
+
+  useEffect(() => {
+    const targetHeight = routeSelected
+      ? ROUTE_SELECTED_HEIGHT
+      : COLLAPSED_HEIGHT;
+    currentHeight.current = targetHeight;
+    Animated.spring(animatedHeight, {
+      toValue: targetHeight,
+      useNativeDriver: false,
+      bounciness: 4,
+    }).start();
+  }, [routeSelected, animatedHeight]);
+
+  return (
+    <Animated.View
+      className="absolute w-full bg-white rounded-t-3xl shadow-2xl px-6 pt-2 pb-10 elevation-5"
+      style={[{ bottom: animatedBottom, height: animatedHeight }]}
+    >
+      <View {...panResponder.panHandlers} className="items-center py-4">
+        <View className="w-12 h-1.5 bg-gray-300 rounded-full" />
+      </View>
+
+      <View className="flex-1" style={{ overflow: "visible" }}>
+        <Text className="text-xl font-bold text-gray-900 mb-5">Where to?</Text>
+
+        <View
+          className="flex-row mb-6"
+          style={{ zIndex: 100, overflow: "visible" }}
+        >
+          <View className="items-center justify-center mr-4 pt-4 pb-2">
+            <View className="w-2 h-2 rounded-full bg-gray-400" />
+            <View className="w-0.5 h-12 bg-gray-300 my-1" />
+            <View className="w-2 h-2 bg-black" />
+          </View>
+
+          <View className="flex-1" style={{ zIndex: 100, overflow: "visible" }}>
+            <View className="mb-3" style={{ zIndex: 20 }}>
+              <PlacesAutocompleteInput
+                label="Origin"
+                placeholder="Enter origin or use current location"
+                value={origin}
+                onChangeText={setOrigin}
+                apiKey={placesApiKey}
+                icon="map-pin"
+                rightIconName="navigation"
+                onRightIconPress={onSetCurrentLocation}
+              />
+            </View>
+
+            <View style={{ zIndex: 10 }}>
+              <PlacesAutocompleteInput
+                label="Destination"
+                placeholder="Enter destination"
+                value={destination}
+                onChangeText={setDestination}
+                apiKey={placesApiKey}
+                icon="map"
+                onPlaceSelected={() => onDestinationSelected()}
+              />
+            </View>
+          </View>
+        </View>
+
+        {routeSelected ? <VehicleTypeSelector /> : null}
+      </View>
+    </Animated.View>
+  );
+}
+```
+
+
+--- src/components/home/RouteEndpointsMarkers.tsx ---
+```tsx
+import React from "react";
+import { View } from "react-native";
+import { Marker } from "react-native-maps";
+
+type LatLng = { latitude: number; longitude: number };
+
+type Props = {
+  start: LatLng;
+  end: LatLng;
+  pulse?: boolean;
+};
+
+export default function RouteEndpointsMarkers({
+  start,
+  end,
+  pulse = false,
+}: Props) {
+  const outerSize = pulse ? 34 : 28;
+  const glow = pulse ? 16 : 8;
+
+  return (
+    <>
+      <Marker coordinate={start} tracksViewChanges={false} zIndex={120}>
+        <View className="items-center justify-center">
+          <View
+            style={{
+              width: outerSize,
+              height: outerSize,
+              borderRadius: outerSize / 2,
+              backgroundColor: "rgba(30,144,255,0.08)",
+              shadowColor: "#1E90FF",
+              shadowOpacity: 0.35,
+              shadowRadius: glow,
+              shadowOffset: { width: 0, height: 0 },
+              elevation: pulse ? 10 : 6,
+            }}
+          />
+          <View
+            style={{
+              position: "absolute",
+              width: 14,
+              height: 14,
+              borderRadius: 7,
+              backgroundColor: "#ffffff",
+              borderWidth: 3,
+              borderColor: "#1E90FF",
+              shadowColor: "#1E90FF",
+              shadowOpacity: 0.8,
+              shadowRadius: 10,
+              shadowOffset: { width: 0, height: 0 },
+              elevation: 12,
+            }}
+          />
+        </View>
+      </Marker>
+
+      <Marker
+        coordinate={end}
+        tracksViewChanges={false}
+        zIndex={120}
+        pinColor="red"
+      />
+    </>
+  );
+}
+```
+
+
+--- src/components/home/RouteOptionsList.tsx ---
+```tsx
+import React from "react";
+import { Pressable, Text, View } from "react-native";
+import type { DirectionsRouteOption } from "../../api/directions";
+
+type Props = {
+  routes: DirectionsRouteOption[];
+  highlightedIndex: number;
+  selectedIndex: number;
+  onHighlightRoute: (index: number) => void;
+  onConfirmRoute: (index: number) => void;
+};
+
+export default function RouteOptionsList({
+  routes,
+  highlightedIndex,
+  selectedIndex,
+  onHighlightRoute,
+  onConfirmRoute,
+}: Props) {
+  if (!routes.length) return null;
+
+  return (
+    <View className="mt-4">
+      <Text className="text-sm font-semibold text-gray-700 mb-2">
+        Recommended Routes
+      </Text>
+
+      <View className="gap-y-2">
+        {routes.slice(0, 3).map((route, index) => {
+          const isSelected = index === selectedIndex;
+          const isHighlighted = index === highlightedIndex;
+
+          return (
+            <Pressable
+              key={index}
+              onPress={() => onHighlightRoute(index)}
+              accessibilityRole="button"
+              accessibilityState={{ selected: isSelected }}
+              className={`p-3 rounded-xl border ${
+                isSelected
+                  ? "border-blue-500 bg-blue-50"
+                  : isHighlighted
+                    ? "border-blue-200 bg-blue-50"
+                    : "border-gray-200 bg-white"
+              }`}
+            >
+              <View className="flex-row justify-between items-center mb-1">
+                <Text
+                  className={`text-sm font-bold ${
+                    isSelected
+                      ? "text-blue-700"
+                      : isHighlighted
+                        ? "text-blue-600"
+                        : "text-gray-800"
+                  }`}
+                >
+                  {index === 0 ? "Fastest Route" : `Route ${index + 1}`}
+                </Text>
+
+                {isSelected ? (
+                  <View className="px-2 py-0.5 rounded-full bg-blue-100">
+                    <Text className="text-xs font-semibold text-blue-700">
+                      Selected
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
+
+              <View className="flex-row items-center gap-x-2">
+                <Text className="text-sm text-gray-600">
+                  {route.durationText || "—"}
+                </Text>
+                <Text className="text-sm text-gray-400">|</Text>
+                <Text className="text-sm text-gray-600">
+                  {route.distanceText || "—"}
+                </Text>
+              </View>
+
+              {route.summary ? (
+                <Text className="mt-1 text-xs text-gray-500" numberOfLines={1}>
+                  via {route.summary}
+                </Text>
+              ) : null}
+
+              <View className="mt-3 flex-row justify-end">
+                <Pressable
+                  onPress={(e) => {
+                    e.stopPropagation();
+                    onConfirmRoute(index);
+                  }}
+                  accessibilityRole="button"
+                  accessibilityLabel={
+                    isSelected ? "Selected route" : `Select route ${index + 1}`
+                  }
+                  className={`px-3 py-2 rounded-lg border ${
+                    isSelected
+                      ? "bg-blue-600 border-blue-600"
+                      : "bg-white border-gray-200"
+                  }`}
+                >
+                  <Text
+                    className={`text-sm font-semibold ${
+                      isSelected ? "text-white" : "text-gray-700"
+                    }`}
+                  >
+                    {isSelected ? "Selected" : "Select"}
+                  </Text>
+                </Pressable>
+              </View>
+            </Pressable>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+```
+
+
+--- src/components/home/VehicleTypeSelector.tsx ---
+```tsx
+import React, { useState } from "react";
+import { Pressable, Text, View } from "react-native";
+
+export type VehicleType = {
+  id: string;
+  label: string;
+};
+
+const VEHICLE_TYPES: VehicleType[] = [
+  { id: "auto", label: "Auto" },
+  { id: "bike", label: "Bike" },
+  { id: "hatchback", label: "Hatchback" },
+  { id: "sedan", label: "Sedan" },
+  { id: "suv", label: "SUV" },
+];
+
+type Props = {
+  onSelect?: (vehicle: VehicleType) => void;
+};
+
+export default function VehicleTypeSelector({ onSelect }: Props) {
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  const handlePress = (vehicle: VehicleType) => {
+    setSelectedId(vehicle.id);
+    onSelect?.(vehicle);
+  };
+
+  return (
+    <View className="mt-4">
+      <Text className="text-sm font-semibold text-gray-700 mb-3">
+        Choose Vehicle
+      </Text>
+      <View className="gap-y-2">
+        {VEHICLE_TYPES.map((vehicle) => {
+          const isSelected = vehicle.id === selectedId;
+          return (
+            <Pressable
+              key={vehicle.id}
+              onPress={() => handlePress(vehicle)}
+              className={`flex-row items-center rounded-xl px-4 py-3 ${
+                isSelected
+                  ? "bg-blue-600 border border-blue-600"
+                  : "bg-gray-50 border border-gray-200"
+              }`}
+              accessibilityRole="button"
+              accessibilityLabel={vehicle.label}
+            >
+              <Text
+                className={`text-base font-medium flex-1 ${
+                  isSelected ? "text-white" : "text-gray-800"
+                }`}
+                numberOfLines={1}
+              >
+                {vehicle.label}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+```
+
+
+--- src/components/ui/Button.tsx ---
+```tsx
+import React from "react";
+import {
+  ActivityIndicator,
+  Pressable,
+  PressableProps,
+  Text,
+} from "react-native";
+
+export type ButtonProps = {
+  children: React.ReactNode;
+  variant?: "primary" | "secondary" | "ghost" | "success";
+  loading?: boolean;
+  className?: string;
+} & PressableProps;
+
+export default function Button({
+  children,
+  onPress,
+  variant = "primary",
+  loading = false,
+  disabled,
+  accessibilityLabel,
+  className: incomingClassName,
+  ...rest
+}: ButtonProps) {
+  const base =
+    "rounded-md px-4 py-2 items-center justify-center transition-colors";
+  const variantClass =
+    variant === "primary"
+      ? "bg-primary-600 hover:bg-primary-700 focus-visible:ring-2 focus-visible:ring-primary-500"
+      : variant === "success"
+        ? "bg-green-600 hover:bg-green-700 focus-visible:ring-2 focus-visible:ring-green-500"
+        : variant === "secondary"
+          ? "bg-gray-100"
+          : "bg-transparent";
+  const textClass =
+    variant === "primary" || variant === "success"
+      ? "text-white"
+      : "text-gray-900";
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      onPress={onPress}
+      disabled={disabled || loading}
+      className={`${base} ${variantClass} ${incomingClassName ?? ""} ${disabled ? "opacity-50" : "opacity-100"}`}
+      {...rest}
+    >
+      {loading ? (
+        <ActivityIndicator
+          color={
+            variant === "primary" || variant === "success" ? "#fff" : "#111827"
+          }
+        />
+      ) : (
+        <Text className={`${textClass} font-semibold`}>{children}</Text>
+      )}
+    </Pressable>
+  );
+}
+```
+
+
+--- src/components/ui/Card.tsx ---
+```tsx
+import React from "react";
+import { View } from "react-native";
+
+export type CardProps = {
+  children: React.ReactNode;
+  className?: string;
+};
+
+export default function Card({ children, className = "" }: CardProps) {
+  return (
+    <View className={`bg-white rounded-lg p-6 shadow ${className}`}>
+      {children}
+    </View>
+  );
+}
+```
+
+
+--- src/components/ui/Checkbox.tsx ---
+```tsx
+import { MaterialIcons } from "@expo/vector-icons";
+import React from "react";
+import { Pressable, Text, View } from "react-native";
+
+type Props = {
+  checked: boolean;
+  onValueChange: (value: boolean) => void;
+  children?: React.ReactNode;
+  accessibilityLabel?: string;
+};
+
+export default function Checkbox({
+  checked,
+  onValueChange,
+  children,
+  accessibilityLabel,
+}: Props) {
+  return (
+    <Pressable
+      onPress={() => onValueChange(!checked)}
+      accessibilityRole="checkbox"
+      accessibilityState={{ checked }}
+      accessibilityLabel={accessibilityLabel}
+      className="flex-row items-start space-x-3"
+    >
+      <View
+        className={`w-5 h-5 rounded-sm border flex items-center justify-center ${
+          checked
+            ? "bg-primary-600 border-primary-600"
+            : "bg-white border-gray-300"
+        }`}
+      >
+        {checked ? <MaterialIcons name="check" size={14} color="#fff" /> : null}
+      </View>
+
+      <View className="flex-1">
+        <Text className="text-sm text-gray-700">{children}</Text>
+      </View>
+    </Pressable>
+  );
+}
+```
+
+
+--- src/components/ui/TextField.tsx ---
+```tsx
+import React, { forwardRef } from "react";
+import { Text, TextInput, TextInputProps, View } from "react-native";
+
+export type TextFieldProps = {
+  label?: string;
+  error?: string | null;
+  containerClassName?: string;
+  leftIcon?: React.ReactNode;
+  rightIcon?: React.ReactNode;
+} & TextInputProps;
+
+const TextField = forwardRef<TextInput, TextFieldProps>(
+  (
+    { label, error, containerClassName = "", leftIcon, rightIcon, ...props },
+    ref,
+  ) => {
+    return (
+      <View className={`w-full ${containerClassName}`}>
+        {label ? (
+          <Text className="mb-1 text-sm font-medium text-gray-700">
+            {label}
+          </Text>
+        ) : null}
+
+        <View
+          className={`flex-row items-center rounded-md border border-gray-300 bg-white px-3 py-2 ${
+            props.editable === false ? "opacity-60" : ""
+          }`}
+        >
+          {leftIcon ? <View className="mr-3">{leftIcon}</View> : null}
+
+          <TextInput
+            ref={ref}
+            {...props}
+            className="flex-1 text-base text-gray-900"
+            accessibilityLabel={props.accessibilityLabel || label}
+            placeholderTextColor="#9CA3AF"
+          />
+
+          {rightIcon ? <View className="ml-3">{rightIcon}</View> : null}
+        </View>
+
+        {error ? (
+          <Text className="mt-1 text-sm text-red-600" accessibilityRole="alert">
+            {error}
+          </Text>
+        ) : null}
+      </View>
+    );
+  },
+);
+
+TextField.displayName = "TextField";
+export default TextField;
+```
+
+
+--- src/utils/decodePolyline.ts ---
+```typescript
+export type LatLng = { latitude: number; longitude: number };
+
+export function decodePolyline(encoded: string): LatLng[] {
+  if (!encoded) return [];
+
+  let index = 0;
+  const len = encoded.length;
+  let lat = 0;
+  let lng = 0;
+  const coordinates: LatLng[] = [];
+
+  while (index < len) {
+    let result = 0;
+    let shift = 0;
+    let b = 0;
+
+    do {
+      b = encoded.charCodeAt(index++) - 63;
+      result |= (b & 0x1f) << shift;
+      shift += 5;
+    } while (b >= 0x20 && index < len);
+
+    const dlat = (result & 1) !== 0 ? ~(result >> 1) : result >> 1;
+    lat += dlat;
+
+    result = 0;
+    shift = 0;
+
+    do {
+      b = encoded.charCodeAt(index++) - 63;
+      result |= (b & 0x1f) << shift;
+      shift += 5;
+    } while (b >= 0x20 && index < len);
+
+    const dlng = (result & 1) !== 0 ? ~(result >> 1) : result >> 1;
+    lng += dlng;
+
+    coordinates.push({ latitude: lat / 1e5, longitude: lng / 1e5 });
+  }
+
+  return coordinates;
+}
+```
+
+
+================================================================================
+CONFIG FILES
+================================================================================
+
+
+--- package.json ---
+```json
+{
+  "name": "frontend",
+  "main": "expo-router/entry",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "expo start",
+    "reset-project": "node ./scripts/reset-project.js",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web",
+    "lint": "expo lint"
+  },
+  "dependencies": {
+    "@expo-google-fonts/inter": "^0.4.2",
+    "@expo/vector-icons": "^15.0.3",
+    "@react-navigation/bottom-tabs": "^7.4.0",
+    "@react-navigation/elements": "^2.6.3",
+    "@react-navigation/native": "^7.1.8",
+    "babel-preset-expo": "^54.0.10",
+    "expo": "~54.0.33",
+    "expo-constants": "~18.0.13",
+    "expo-font": "~14.0.11",
+    "expo-haptics": "~15.0.8",
+    "expo-image": "~3.0.11",
+    "expo-linking": "~8.0.11",
+    "expo-location": "~19.0.8",
+    "expo-router": "~6.0.23",
+    "expo-secure-store": "~15.0.8",
+    "expo-splash-screen": "~31.0.13",
+    "expo-status-bar": "~3.0.9",
+    "expo-symbols": "~1.0.8",
+    "expo-system-ui": "~6.0.9",
+    "expo-web-browser": "~15.0.10",
+    "nativewind": "^4.2.1",
+    "prettier-plugin-tailwindcss": "^0.5.14",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "react-native": "0.81.5",
+    "react-native-gesture-handler": "~2.28.0",
+    "react-native-google-places-autocomplete": "^2.6.4",
+    "react-native-maps": "1.20.1",
+    "react-native-reanimated": "~4.1.1",
+    "react-native-safe-area-context": "~5.6.0",
+    "react-native-screens": "~4.16.0",
+    "react-native-web": "~0.21.0",
+    "react-native-worklets": "0.5.1"
+  },
+  "devDependencies": {
+    "@types/react": "~19.1.0",
+    "dotenv": "^17.3.1",
+    "eslint": "^9.25.0",
+    "eslint-config-expo": "~10.0.0",
+    "tailwindcss": "^3.4.19",
+    "typescript": "~5.9.2"
+  },
+  "private": true
+}
+```
+
+
+--- app.config.ts ---
+```typescript
+import "dotenv/config";
+
+export default ({ config }: { config: any }) => {
+  const googleMapsApiKey =
+    process.env.GOOGLE_MAPS_ANDROID_API_KEY ??
+    process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY ??
+    "";
+
+  return {
+    ...config,
+    name: "Frontend",
+    slug: "Frontend",
+    version: "1.0.0",
+    orientation: "portrait",
+    icon: "./assets/images/icon.png",
+    scheme: "frontend",
+    userInterfaceStyle: "automatic",
+    newArchEnabled: true,
+    ios: {
+      ...config.ios,
+      supportsTablet: true,
+    },
+    android: {
+      ...config.android,
+      adaptiveIcon: {
+        backgroundColor: "#E6F4FE",
+        foregroundImage: "./assets/images/android-icon-foreground.png",
+        backgroundImage: "./assets/images/android-icon-background.png",
+        monochromeImage: "./assets/images/android-icon-monochrome.png",
+      },
+      edgeToEdgeEnabled: true,
+      predictiveBackGestureEnabled: false,
+      config: {
+        ...config.android?.config,
+        googleMaps: {
+          ...(config.android?.config?.googleMaps ?? {}),
+          apiKey: googleMapsApiKey,
+        },
+      },
+    },
+    web: {
+      ...config.web,
+      output: "static",
+      favicon: "./assets/images/favicon.png",
+    },
+    plugins: [
+      "expo-router",
+      "expo-secure-store",
+      [
+        "expo-splash-screen",
+        {
+          image: "./assets/images/splash-icon.png",
+          imageWidth: 200,
+          resizeMode: "contain",
+          backgroundColor: "#ffffff",
+          dark: {
+            backgroundColor: "#000000",
+          },
+        },
+      ],
+    ],
+    experiments: {
+      typedRoutes: true,
+      reactCompiler: true,
+    },
+  };
+};
+```
+
+
+--- tailwind.config.js ---
+```javascript
+const tailwindColors = require("tailwindcss/colors");
+
+/** @type {import('tailwindcss').Config} */
+module.exports = {
+  content: [
+    "./app/**/*.{js,jsx,ts,tsx}",
+    "./src/**/*.{js,jsx,ts,tsx}",
+    "./components/**/*.{js,jsx,ts,tsx}",
+  ],
+  presets: [require("nativewind/preset")],
+  theme: {
+    extend: {
+      colors: {
+        primary: tailwindColors.green,
+      },
+      fontFamily: {
+        sans: [
+          "Inter",
+          "ui-sans-serif",
+          "system-ui",
+          "-apple-system",
+          "Segoe UI",
+          "Roboto",
+          "Helvetica Neue",
+          "Arial",
+        ],
+      },
+    },
+  },
+  plugins: [],
+};
+```
+
+
+--- tsconfig.json ---
+```jsonc
+{
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    "strict": true,
+    "paths": {
+      "@/*": [
+        "./*"
+      ]
+    }
+  },
+  "include": [
+    "**/*.ts",
+    "**/*.tsx",
+    ".expo/types/**/*.ts",
+    "expo-env.d.ts",
+    "nativewind-env.d.ts"
+  ]
+}
+```
+
+
+--- babel.config.js ---
+```javascript
+module.exports = function (api) {
+  api.cache(true);
+  return {
+    presets: [
+      ["babel-preset-expo", { jsxImportSource: "nativewind" }],
+      "nativewind/babel",
+    ],
+  };
+};
+```
+
+
+--- metro.config.js ---
+```javascript
+const { getDefaultConfig } = require("expo/metro-config");
+const { withNativeWind } = require("nativewind/metro");
+
+const config = getDefaultConfig(__dirname);
+
+module.exports = withNativeWind(config, { input: "./global.css" });
+```
+
+
+--- global.css ---
+```css
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root,
+html,
+body,
+#root {
+  font-family:
+    "Inter",
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    "Helvetica Neue",
+    Arial;
+}
+```
+
+
+================================================================================
+KNOWN TODO / TEMP STATES
+================================================================================
+
+1. TEMP BYPASS (search "TEMP" in code):
+   - app/index.tsx: always redirects to /user/home (auth logic commented out)
+   - app/user/_layout.tsx: auth guard bypassed (always renders Stack)
+   → Uncomment the original code to restore auth gating
+
+2. API BASE URL:
+   - src/api/auth.ts uses relative URLs ("/auth/login", "/auth/register")
+   - Works on web (same domain) but WILL FAIL on native device
+   - Need to add an API_BASE constant (e.g. EXPO_PUBLIC_API_BASE_URL)
+
+3. EMPTY FOLDERS:
+   - src/components/screens/ — reserved for future screen-level components
+   - src/components/user/ — reserved for user-specific components
+
+4. DRIVER SCREENS ARE PLACEHOLDERS:
+   - app/driver/(tabs)/home.tsx — just text, no real content yet
+   - app/driver/(tabs)/bookings.tsx — just text, no real content yet
+
+5. ENV VARS NEEDED:
+   - EXPO_PUBLIC_GOOGLE_DIRECTIONS_API_KEY or EXPO_PUBLIC_GOOGLE_MAPS_API_KEY
+   - GOOGLE_MAPS_ANDROID_API_KEY (for native Android maps)
+
+================================================================================
+END OF PROJECT CONTEXT
+================================================================================

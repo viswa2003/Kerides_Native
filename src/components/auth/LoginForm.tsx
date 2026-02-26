@@ -3,6 +3,7 @@ import { useRouter } from "expo-router";
 import React, { useState } from "react";
 import { Alert, Linking, Text, View } from "react-native";
 import { login, LoginRequest, Role } from "../../api/auth";
+import { useAuth } from "../../auth/AuthProvider";
 import Button from "../ui/Button";
 import TextField from "../ui/TextField";
 
@@ -17,10 +18,10 @@ function isEmail(value: string) {
 
 /**
  * Reusable login form used by both User and Driver login pages.
- * - Sends role (if provided) to the API so server can validate scoped logins.
  */
 export default function LoginForm({ role = "USER", onSuccess }: Props) {
   const router = useRouter();
+  const { signIn } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -42,16 +43,19 @@ export default function LoginForm({ role = "USER", onSuccess }: Props) {
     const payload: LoginRequest = {
       email: email.trim().toLowerCase(),
       password,
-      role,
     };
 
     try {
       const resp = await login(payload);
-      // TODO: store token / set auth state — left to app-specific auth flow
+      await signIn(resp.accessToken, resp.user.role);
       onSuccess?.(resp);
-      Alert.alert("Signed in", "Login successful.", [
-        { text: "OK", onPress: () => router.replace("/") },
-      ]);
+
+      // Navigate to the correct role-specific home
+      if (resp.user.role === "DRIVER") {
+        router.replace("/driver/home");
+      } else {
+        router.replace("/user/home");
+      }
     } catch (err: any) {
       Alert.alert("Login failed", err?.message || String(err));
     } finally {

@@ -1,17 +1,34 @@
 export type Role = "USER" | "DRIVER" | "ADMIN";
 
+type AuthUser = {
+  id: string;
+  email: string;
+  fullName: string;
+  role: Role;
+};
+
+export type AuthResponse = {
+  accessToken: string;
+  refreshToken?: string;
+  user: AuthUser;
+};
+
+function getApiBaseUrl(): string {
+  const raw = process.env.EXPO_PUBLIC_API_BASE_URL ?? "";
+  return raw.replace(/\/+$/, "");
+}
+
+function buildUrl(path: string): string {
+  const base = getApiBaseUrl();
+  if (!base) return path;
+  return `${base}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
 export type RegisterRequest = {
   email: string;
   password: string;
   fullName: string;
   phoneNumber?: string;
-  role: Role;
-};
-
-export type RegisterResponse = {
-  id: string;
-  email: string;
-  fullName: string;
   role: Role;
 };
 
@@ -21,8 +38,8 @@ export type RegisterResponse = {
  */
 export async function register(
   payload: RegisterRequest,
-): Promise<RegisterResponse> {
-  const res = await fetch("/auth/register", {
+): Promise<AuthResponse> {
+  const res = await fetch(buildUrl("/auth/register"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -44,25 +61,13 @@ export async function register(
 export type LoginRequest = {
   email: string;
   password: string;
-  role?: Role;
-};
-
-export type LoginResponse = {
-  token?: string;
-  user?: {
-    id: string;
-    email: string;
-    fullName?: string;
-    role: Role;
-  };
 };
 
 /**
  * Call backend POST /auth/login
- * We include role when provided so the server can validate role-scoped logins.
  */
-export async function login(payload: LoginRequest): Promise<LoginResponse> {
-  const res = await fetch("/auth/login", {
+export async function login(payload: LoginRequest): Promise<AuthResponse> {
+  const res = await fetch(buildUrl("/auth/login"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),

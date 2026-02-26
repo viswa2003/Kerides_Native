@@ -2,7 +2,7 @@ import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { Tabs } from "expo-router";
 import React from "react";
 
-export default function TabsLayout() {
+export default function UserTabsLayout() {
   return (
     <Tabs
       screenOptions={{
