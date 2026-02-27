@@ -17,7 +17,7 @@ export default function Index() {
     if (isLoading) return;
 
     // TEMP: always open user home for testing
-    router.replace("/user/home");
+    router.replace("/driver/(tabs)/home");
 
     // if (token && role === "DRIVER") {
     //   router.replace("/driver/home");

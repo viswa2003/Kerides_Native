@@ -1,0 +1,1179 @@
+================================================================================
+KERIDES NATIVE — FRONTEND PROJECT CONTEXT (FULL)
+================================================================================
+Date: February 27, 2026
+Stack: React Native (Expo SDK 54), Expo Router v6, NativeWind v4, TypeScript
+App: Ride-hailing app ("Kerides") with separate User and Driver workflows
+
+================================================================================
+PROJECT OVERVIEW & ARCHITECTURE DECISIONS
+================================================================================
+
+1. TWO SEPARATE "APPS" INSIDE ONE CODEBASE
+   - User: requests rides, sees map + route options, picks vehicle type
+     Tabs: Home (map), History (placeholder), Accounts (sign out)
+   - Driver: accepts ride requests (map now live with GPS tracking & heading arrow)
+     Tabs: Home (map + live location), Bookings (placeholder), Profile (sign out)
+
+2. ROUTING STRATEGY (Expo Router file-based)
+   - app/index.tsx acts as the entry point / role-based redirector
+   - app/(auth)/ contains login/register pages for both roles (unguarded)
+   - app/user/ is guarded by _layout.tsx → only role=USER can enter
+   - app/driver/ is guarded by _layout.tsx → only role=DRIVER can enter
+   - Each role group has its own (tabs)/ with independent tab navigators
+
+3. AUTH / SESSION
+   - expo-secure-store persists: token, role, lastRole (survives logout)
+   - AuthProvider (React context) hydrates from SecureStore on mount
+   - useAuth() hook exposes: isLoading, token, role, lastRole, signIn, signOut
+   - signIn stores token+role to SecureStore, signOut clears token+role
+   - On app start, logged-out users are sent to lastRole's login (defaults USER)
+
+4. NAVIGATION FLOW
+   Logged out:
+     / → reads lastRole → /user/login OR /driver/login
+     User login page has link to driver login, and vice versa
+     Register auto-logs-in and redirects to role's home tab
+
+   Logged in:
+     / → checks role → /user/home OR /driver/home
+     Cross-role deep links are blocked by route guards (redirect out)
+     Sign out clears session → router.replace to login page
+
+5. API LAYER
+   - src/api/auth.ts: login() and register() using fetch (relative URLs)
+   - src/api/directions.ts: Google Directions API for route alternatives
+   - IMPORTANT: API base URL is relative; native builds need EXPO_PUBLIC_API_BASE_URL
+
+6. SCROLL WARNINGS
+   - RideRequestCard previously wrapped content in an Animated.ScrollView,
+     which triggered warnings. Outer scroll removed; inner components manage scrolling.
+
+7. TEMP TESTING STATE (MUST UNDO BEFORE PRODUCTION)
+   - app/index.tsx: always redirects to /driver/(tabs)/home (auth logic commented out)
+   - app/user/_layout.tsx: auth guard bypassed (always renders Stack)
+   Search for "TEMP" comments in those files to restore
+
+================================================================================
+FILE STRUCTURE & FULL SOURCE CONTENT
+================================================================================
+
+--- app/_layout.tsx ---
+```tsx
+import {
+    Inter_400Regular,
+    Inter_600SemiBold,
+    Inter_700Bold,
+} from "@expo-google-fonts/inter";
+import { useFonts } from "expo-font";
+import { Stack } from "expo-router";
+import { StatusBar } from "expo-status-bar";
+import { useEffect } from "react";
+import { Text, TextInput } from "react-native";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
+import "../global.css";
+import { AuthProvider } from "../src/auth/AuthProvider";
+
+export default function RootLayout() {
+  const [fontsLoaded] = useFonts({
+    Inter: Inter_400Regular,
+    "Inter-SemiBold": Inter_600SemiBold,
+    "Inter-Bold": Inter_700Bold,
+  });
+
+  useEffect(() => {
+    if (!fontsLoaded) return;
+
+    // Set sensible defaults so all RN Text/TextInput use Inter by default
+    (Text as unknown as any).defaultProps =
+      (Text as unknown as any).defaultProps || {};
+    (Text as unknown as any).defaultProps.style = {
+      ...((Text as unknown as any).defaultProps.style || {}),
+      fontFamily: "Inter",
+    };
+
+    (TextInput as unknown as any).defaultProps =
+      (TextInput as unknown as any).defaultProps || {};
+    (TextInput as unknown as any).defaultProps.style = {
+      ...((TextInput as unknown as any).defaultProps.style || {}),
+      fontFamily: "Inter",
+    };
+  }, [fontsLoaded]);
+
+  if (!fontsLoaded) return null;
+
+  return (
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <AuthProvider>
+        <StatusBar style="dark" />
+        <Stack screenOptions={{ headerShown: false }} />
+      </AuthProvider>
+    </GestureHandlerRootView>
+  );
+}
+```
+
+--- app/index.tsx ---
+```tsx
+import { useRouter } from "expo-router";
+import { useEffect } from "react";
+import { View } from "react-native";
+import { useAuth } from "../src/auth/AuthProvider";
+
+/**
+ * Root entry: decides where to send the user on app start.
+ * - Logged in + USER  → /user/home
+ * - Logged in + DRIVER → /driver/home
+ * - Logged out → lastRole-based login (defaults to user login)
+ */
+export default function Index() {
+  const router = useRouter();
+  const { isLoading, token, role, lastRole } = useAuth();
+
+  useEffect(() => {
+    if (isLoading) return;
+
+    // TEMP: always open user home for testing
+    router.replace("/driver/(tabs)/home");
+
+    // if (token && role === "DRIVER") {
+    //   router.replace("/driver/home");
+    // } else if (token && role === "USER") {
+    //   router.replace("/user/home");
+    // } else {
+    //   // Not logged in — remember last role used
+    //   if (lastRole === "DRIVER") {
+    //     router.replace("/driver/login");
+    //   } else {
+    //     router.replace("/user/login");
+    //   }
+    // }
+  }, [isLoading, token, role, lastRole, router]);
+
+  // Render nothing while deciding (keeps splash visible on native)
+  return <View style={{ flex: 1 }} />;
+}
+```
+
+--- app/(auth)/_layout.tsx ---
+```tsx
+import { Stack } from "expo-router";
+
+export default function AuthLayout() {
+  return <Stack screenOptions={{ headerShown: false }} />;
+}
+```
+
+--- app/(auth)/user/login.tsx ---
+```tsx
+import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { Link } from "expo-router";
+import React from "react";
+import { Text, View } from "react-native";
+import LoginForm from "../../../src/components/auth/LoginForm";
+
+export default function LoginPage() {
+  return (
+    <View className="flex-1 bg-white">
+      <View className="items-center mt-12 px-6">
+        <View className="bg-primary-600 w-16 h-16 rounded-xl items-center justify-center shadow mb-4">
+          <MaterialCommunityIcons name="account" size={28} color="#fff" />
+        </View>
+        <Text className="text-3xl font-bold text-gray-900">Welcome back</Text>
+        <Text className="text-sm text-gray-500 mt-1">Sign in to continue</Text>
+      </View>
+
+      <View className="mt-8 px-4">
+        <LoginForm role="USER" />
+
+        <View className="mt-4 items-center">
+          <Text className="text-sm text-gray-600">
+            {"Don't have an account? "}
+            <Link
+              href="/user/register"
+              className="text-primary-600 font-medium"
+            >
+              Create one
+            </Link>
+          </Text>
+        </View>
+
+        <View className="mt-4 items-center">
+          <Link
+            href="/driver/login"
+            className="text-sm text-primary-600 font-medium"
+          >
+            Sign in as a Driver instead
+          </Link>
+        </View>
+
+        <View className="mt-6 items-center">
+          <Text className="text-xs text-gray-400">
+            Signing in as <Text className="font-medium">USER</Text>
+          </Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+```
+
+--- app/(auth)/user/register.tsx ---
+```tsx
+import { Link } from "expo-router";
+import React from "react";
+import { Text, View } from "react-native";
+import RegisterForm from "../../../src/components/auth/RegisterForm";
+
+export default function UserRegister() {
+  return (
+    <View className="flex-1 bg-white">
+      <View className="items-center mt-12 px-6">
+        <View className="bg-primary-600 w-16 h-16 rounded-xl items-center justify-center shadow mb-4" />
+        <Text className="text-3xl font-bold text-gray-900">Create Account</Text>
+        <Text className="text-sm text-gray-500 mt-1">
+          Sign up to get started
+        </Text>
+      </View>
+
+      <View className="mt-8 px-4">
+        <RegisterForm role="USER" />
+
+        <View className="mt-4 items-center">
+          <Text className="text-sm text-gray-600">
+            Already have an account?{' '}
+            <Link href="/user/login" className="text-primary-600 font-medium">
+              Sign in
+            </Link>
+          </Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+```
+
+--- app/(auth)/driver/login.tsx ---
+```tsx
+import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { Link } from "expo-router";
+import React from "react";
+import { Text, View } from "react-native";
+import LoginForm from "../../../src/components/auth/LoginForm";
+
+export default function DriverLogin() {
+  return (
+    <View className="flex-1 bg-white">
+      <View className="items-center mt-12 px-6">
+        <View className="bg-primary-600 w-16 h-16 rounded-xl items-center justify-center shadow mb-4">
+          <MaterialCommunityIcons name="steering" size={28} color="#fff" />
+        </View>
+        <Text className="text-3xl font-bold text-gray-900">Welcome back</Text>
+        <Text className="text-sm text-gray-500 mt-1">Sign in as a driver</Text>
+      </View>
+
+      <View className="mt-8 px-4">
+        <LoginForm role="DRIVER" />
+
+        <View className="mt-4 items-center">
+          <Text className="text-sm text-gray-600">
+            {"Don't have an account? "}
+            <Link
+              href="/driver/register"
+              className="text-primary-600 font-medium"
+            >
+              Create one
+            </Link>
+          </Text>
+        </View>
+
+        <View className="mt-4 items-center">
+          <Link
+            href="/user/login"
+            className="text-sm text-primary-600 font-medium"
+          >
+            Sign in as a User instead
+          </Link>
+        </View>
+
+        <View className="mt-6 items-center">
+          <Text className="text-xs text-gray-400">
+            Signing in as <Text className="font-medium">DRIVER</Text>
+          </Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+```
+
+--- app/(auth)/driver/register.tsx ---
+```tsx
+import { Link } from "expo-router";
+import React from "react";
+import { Text, View } from "react-native";
+import RegisterForm from "../../../src/components/auth/RegisterForm";
+
+export default function DriverRegister() {
+  return (
+    <View className="flex-1 bg-white">
+      <View className="items-center mt-12 px-6">
+        <View className="bg-primary-600 w-16 h-16 rounded-xl items-center justify-center shadow mb-4" />
+        <Text className="text-3xl font-bold text-gray-900">Create Account</Text>
+        <Text className="text-sm text-gray-500 mt-1">Register as a driver</Text>
+      </View>
+
+      <View className="mt-8 px-4">
+        <RegisterForm role="DRIVER" />
+
+        <View className="mt-4 items-center">
+          <Text className="text-sm text-gray-600">
+            Already have an account?{' '}
+            <Link href="/driver/login" className="text-primary-600 font-medium">
+              Sign in
+            </Link>
+          </Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+```
+
+--- app/driver/_layout.tsx ---
+```tsx
+// import { Redirect, Stack } from "expo-router";
+// import React from "react";
+// import { useAuth } from "../../src/auth/AuthProvider";
+// {
+// /**
+//  * Guard: only authenticated users with role === DRIVER may enter.
+//  * - Not logged in → redirect to driver login
+//  * - Logged in as USER → redirect to user home
+//  */}
+// export default function DriverLayout() {
+//   const { isLoading, token, role } = useAuth();
+
+//   if (isLoading) return null; // still hydrating from SecureStore
+
+//   if (!token) return <Redirect href="/driver/login" />;
+//   if (role !== "DRIVER") return <Redirect href="/user/home" />;
+
+//   return <Stack screenOptions={{ headerShown: false }} />;
+// }
+import { Stack } from "expo-router";
+
+export default function DriverLayout() {
+  // TEMP: bypass driver auth guard for testing
+  return <Stack screenOptions={{ headerShown: false }} />;
+}
+```
+
+--- app/driver/(tabs)/_layout.tsx ---
+```tsx
+import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { Tabs } from "expo-router";
+import React from "react";
+
+export default function DriverTabsLayout() {
+  return (
+    <Tabs
+      screenOptions={{
+        headerShown: false,
+        tabBarActiveTintColor: "#16A34A",
+        tabBarStyle: { height: 64, paddingBottom: 8 },
+        tabBarLabelStyle: { fontSize: 12 },
+      }}
+    >
+      <Tabs.Screen
+        name="home"
+        options={{
+          title: "Home",
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons
+              name="home-outline"
+              size={size ?? 24}
+              color={color}
+            />
+          ),
+        }}
+      />
+
+      <Tabs.Screen
+        name="bookings"
+        options={{
+          title: "Bookings",
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons
+              name="clipboard-list-outline"
+              size={size ?? 24}
+              color={color}
+            />
+          ),
+        }}
+      />
+
+      <Tabs.Screen
+        name="profile"
+        options={{
+          title: "Profile",
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons
+              name="account-circle-outline"
+              size={size ?? 24}
+              color={color}
+            />
+          ),
+        }}
+      />
+    </Tabs>
+  );
+}
+```
+
+--- app/driver/(tabs)/profile.tsx ---
+```tsx
+import { useRouter } from "expo-router";
+import React from "react";
+import { Text, View } from "react-native";
+import { useAuth } from "../../../src/auth/AuthProvider";
+import Button from "../../../src/components/ui/Button";
+
+export default function ProfileTab() {
+  const { signOut } = useAuth();
+  const router = useRouter();
+
+  async function handleSignOut() {
+    await signOut();
+    router.replace("/driver/login");
+  }
+
+  return (
+    <View className="flex-1 bg-white px-6 pt-8">
+      <Text className="text-2xl font-bold text-gray-900">Profile</Text>
+      <Text className="mt-2 text-sm text-gray-500">
+        Manage your driver profile and settings.
+      </Text>
+
+      <View className="mt-8">
+        <Button onPress={handleSignOut} accessibilityLabel="Sign out">
+          Sign Out
+        </Button>
+      </View>
+    </View>
+  );
+}
+```
+
+--- app/driver/(tabs)/home.tsx ---
+```tsx
+import * as Location from "expo-location";
+import React, { useEffect, useRef, useState } from "react";
+import { Alert, Image, StyleSheet, View } from "react-native";
+import MapView, { Marker } from "react-native-maps";
+import arrow from "../../../assets/images/map_arrow.png"
+
+type Coords = {
+  latitude: number;
+  longitude: number;
+};
+
+export default function DriverHomeTab() {
+  const mapRef = useRef<MapView | null>(null);
+  const locationSubscription = useRef<Location.LocationSubscription | null>(null);
+
+  const [location, setLocation] = useState<Coords | null>(null);
+  const [heading, setHeading] = useState<number>(0);
+
+  useEffect(() => {
+    let mounted = true;
+
+    (async () => {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+
+      if (status !== "granted") {
+        Alert.alert(
+          "Permission required",
+          "Location access is required for drivers."
+        );
+        return;
+      }
+
+      locationSubscription.current = await Location.watchPositionAsync(
+        {
+          accuracy: Location.Accuracy.Highest,
+          timeInterval: 2000,
+          distanceInterval: 2,
+        },
+        (loc) => {
+          if (!mounted) return;
+
+          const coords = {
+            latitude: loc.coords.latitude,
+            longitude: loc.coords.longitude,
+          };
+
+          setLocation(coords);
+          setHeading(loc.coords.heading ?? 0);
+
+          mapRef.current?.animateCamera(
+            {
+              center: coords,
+              zoom: 17,
+            },
+            { duration: 500 }
+          );
+        }
+      );
+    })();
+
+    return () => {
+      mounted = false;
+      locationSubscription.current?.remove();
+    };
+  }, []);
+
+  return (
+    <View style={{ flex: 1 }}>
+      <MapView
+        ref={mapRef}
+        style={StyleSheet.absoluteFillObject}
+        initialRegion={{
+          latitude: location?.latitude ?? 9.9312,
+          longitude: location?.longitude ?? 76.2673,
+          latitudeDelta: 0.01,
+          longitudeDelta: 0.01,
+        }}
+      >
+        {location && (
+          <Marker
+            coordinate={location}
+            anchor={{ x: 0.5, y: 0.5 }}
+            flat
+          >
+            <Image
+              source={arrow}
+              style={{
+                width: 20,
+                height: 40,
+                transform: [{ rotate: `${heading}deg` }],
+              }}
+              resizeMode="contain"
+            />
+          </Marker>
+        )}
+      </MapView>
+    </View>
+  );
+}
+
+--- app/driver/(tabs)/bookings.tsx ---
+```tsx
+import React from "react";
+import { Text, View } from "react-native";
+
+export default function BookingsTab() {
+  return (
+    <View className="flex-1 bg-white items-center justify-center px-6">
+      <Text className="text-2xl font-bold text-gray-900">Bookings</Text>
+      <Text className="mt-2 text-sm text-gray-500 text-center">
+        Your assigned and completed trips will appear here.
+      </Text>
+    </View>
+  );
+}
+```
+
+--- app/user/_layout.tsx ---
+```tsx
+import { Redirect, Stack } from "expo-router";
+import React from "react";
+import { useAuth } from "../../src/auth/AuthProvider";
+
+/**
+ * Guard: only authenticated users with role === USER may enter.
+ * - Not logged in → redirect to user login
+ * - Logged in as DRIVER → redirect to driver home
+ */
+export default function UserLayout() {
+  // TEMP: bypass auth guard for testing
+  return <Stack screenOptions={{ headerShown: false }} />;
+
+  // const { isLoading, token, role } = useAuth();
+  //
+  // if (isLoading) return null;
+  // if (!token) return <Redirect href="/user/login" />;
+  // if (role !== "USER") return <Redirect href="/driver/home" />;
+  //
+  // return <Stack screenOptions={{ headerShown: false }} />;
+}
+```
+
+--- app/user/nearby-vehicles.tsx ---
+```tsx
+import { Feather } from "@expo/vector-icons";
+import { useLocalSearchParams, useRouter } from "expo-router";
+import React from "react";
+import { FlatList, Pressable, Text, View } from "react-native";
+import NearbyVehicleCard, {
+  type NearbyVehicle,
+} from "../../src/components/home/NearbyVehicleCard";
+
+// ── Temporary mock data ──────────────────────────────────────────────
+const MOCK_VEHICLES: Record<string, NearbyVehicle[]> = {
+  auto: [
+    { id: "a1", vehicleName: "Bajaj RE", driverName: "Raju K.", price: 85, photo: "https://i.imgur.com/8Km9tLL.png", rating: 4.5, eta: "3 min" },
+    { id: "a2", vehicleName: "Piaggio Ape", driverName: "Suresh M.", price: 90, photo: "https://i.imgur.com/8Km9tLL.png", rating: 4.2, eta: "5 min" },
+    { id: "a3", vehicleName: "Bajaj RE", driverName: "Vinod S.", price: 80, photo: "https://i.imgur.com/8Km9tLL.png", rating: 4.8, eta: "7 min" },
+  ],
+  bike: [
+    { id: "b1", vehicleName: "Honda Activa", driverName: "Anil P.", price: 45, photo: "https://i.imgur.com/8Km9tLL.png", rating: 4.6, eta: "2 min" },
+    { id: "b2", vehicleName: "TVS Jupiter", driverName: "Manoj R.", price: 50, photo: "https://i.imgur.com/8Km9tLL.png", rating: 4.3, eta: "4 min" },
+  ],
+  hatchback: [
+    { id: "h1", vehicleName: "Maruti Swift", driverName: "Ramesh T.", price: 150, photo: "https://i.imgur.com/8Km9tLL.png", rating: 4.7, eta: "4 min" },
+    { id: "h2", vehicleName: "Hyundai i20", driverName: "Krishna V.", price: 160, photo: "https://i.imgur.com/8Km9tLL.png", rating: 4.4, eta: "6 min" },
+    { id: "h3", vehicleName: "Tata Altroz", driverName: "Deepak J.", price: 145, photo: "https://i.imgur.com/8Km9tLL.png", rating: 4.9, eta: "8 min" },
+  ],
+  sedan: [
+    { id: "s1", vehicleName: "Honda City", driverName: "Ajay N.", price: 220, photo: "https://i.imgur.com/8Km9tLL.png", rating: 4.8, eta: "5 min" },
+    { id: "s2", vehicleName: "Hyundai Verna", driverName: "Sanjay D.", price: 210, photo: "https://i.imgur.com/8Km9tLL.png", rating: 4.5, eta: "7 min" },
+    { id: "s3", vehicleName: "Maruti Ciaz", driverName: "Prakash L.", price: 200, photo: "https://i.imgur.com/8Km9tLL.png", rating: 4.6, eta: "9 min" },
+  ],
+  suv: [
+    { id: "u1", vehicleName: "Toyota Innova", driverName: "Mohan B.", price: 350, photo: "https://i.imgur.com/8Km9tLL.png", rating: 4.9, eta: "6 min" },
+    { id: "u2", vehicleName: "Mahindra XUV700", driverName: "Ganesh H.", price: 330, photo: "https://i.imgur.com/8Km9tLL.png", rating: 4.7, eta: "8 min" },
+    { id: "u3", vehicleName: "Kia Seltos", driverName: "Naveen W.", price: 310, photo: "https://i.imgur.com/8Km9tLL.png", rating: 4.4, eta: "10 min" },
+  ],
+};
+// ─────────────────────────────────────────────────────────────────────
+
+export default function NearbyVehiclesScreen() {
+  const router = useRouter();
+  const { vehicleType } = useLocalSearchParams<{ vehicleType: string }>();
+
+  const vehicles = MOCK_VEHICLES[vehicleType ?? ""] ?? [];
+  const typeLabel = vehicleType
+    ? vehicleType.charAt(0).toUpperCase() + vehicleType.slice(1)
+    : "Vehicles";
+
+  const handleSelect = (vehicle: NearbyVehicle) => {
+    // TODO: integrate with booking API
+    console.log("Selected vehicle:", vehicle);
+  };
+
+  return (
+    <View className="flex-1 bg-gray-50">
+      {/* Header */}
+      <View className="bg-white pt-14 pb-4 px-5 flex-row items-center border-b border-gray-100">
+        <Pressable
+          onPress={() => router.back()}
+          className="mr-4 p-1"
+          accessibilityLabel="Go back"
+        >
+          <Feather name="arrow-left" size={24} color="#111827" />
+        </Pressable>
+        <View className="flex-1">
+          <Text className="text-xl font-bold text-gray-900">
+            Nearby {typeLabel}s
+          </Text>
+          <Text className="text-sm text-gray-500 mt-0.5">
+            {vehicles.length} {vehicles.length === 1 ? "vehicle" : "vehicles"}{" "}
+            found
+          </Text>
+        </View>
+      </View>
+
+      {/* Vehicle list */}
+      {vehicles.length > 0 ? (
+        <FlatList
+          data={vehicles}
+          keyExtractor={(item) => item.id}
+          contentContainerStyle={{ padding: 16 }}
+          renderItem={({ item }) => (
+            <NearbyVehicleCard vehicle={item} onSelect={handleSelect} />
+          )}
+        />
+      ) : (
+        <View className="flex-1 items-center justify-center px-6">
+          <Feather name="search" size={48} color="#D1D5DB" />
+          <Text className="text-lg font-semibold text-gray-400 mt-4">
+            No nearby vehicles found
+          </Text>
+          <Text className="text-sm text-gray-400 mt-1 text-center">
+            Try selecting a different vehicle type.
+          </Text>
+        </View>
+      )}
+    </View>
+  );
+}
+```
+
+--- app/user/(tabs)/_layout.tsx ---
+```tsx
+import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { Tabs } from "expo-router";
+import React from "react";
+
+export default function UserTabsLayout() {
+  return (
+    <Tabs
+      screenOptions={{
+        headerShown: false,
+        tabBarActiveTintColor: "#16A34A",
+        tabBarStyle: { height: 64, paddingBottom: 8 },
+        tabBarLabelStyle: { fontSize: 12 },
+      }}
+    >
+      <Tabs.Screen
+        name="home"
+        options={{
+          title: "Home",
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons
+              name="home-outline"
+              size={size ?? 24}
+              color={color}
+            />
+          ),
+        }}
+      />
+
+      <Tabs.Screen
+        name="history"
+        options={{
+          title: "History",
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons
+              name="history"
+              size={size ?? 24}
+              color={color}
+            />
+          ),
+        }}
+      />
+
+      <Tabs.Screen
+        name="accounts"
+        options={{
+          title: "Accounts",
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons
+              name="account-circle-outline"
+              size={size ?? 24}
+              color={color}
+            />
+          ),
+        }}
+      />
+    </Tabs>
+  );
+}
+```
+
+--- app/user/(tabs)/home.tsx ---
+```tsx
+import * as Location from "expo-location";
+import { useRouter } from "expo-router";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { Alert, Dimensions, Text, View } from "react-native";
+import MapView, { Marker, Polyline } from "react-native-maps";
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+} from "react-native-reanimated";
+
+import {
+  fetchDirectionsAlternatives,
+  type DirectionsRouteOption,
+} from "../../../src/api/directions";
+import RideRequestCard from "../../../src/components/home/RideRequestCard";
+import RouteEndpointsMarkers from "../../../src/components/home/RouteEndpointsMarkers";
+import type { VehicleType } from "../../../src/components/home/VehicleTypeSelector";
+
+const { height: SCREEN_HEIGHT } = Dimensions.get("window");
+
+export default function UserHomeTab() {
+  const router = useRouter();
+  const mapRef = useRef<MapView | null>(null);
+
+  const cardHeight = useSharedValue(280);
+
+  const animatedMapStyle = useAnimatedStyle(() => {
+    return {
+      height: SCREEN_HEIGHT - cardHeight.value,
+    };
+  });
+
+  const [origin, setOrigin] = useState("");
+  const [destination, setDestination] = useState("");
+  const [currentLocation, setCurrentLocation] = useState<Coords>(null);
+  const [originIsCurrentLocation, setOriginIsCurrentLocation] = useState(false);
+
+  const [routes, setRoutes] = useState<DirectionsRouteOption[]>([]);
+  const [highlightedRouteIndex, setHighlightedRouteIndex] = useState(-1);
+  const [selectedRouteIndex, setSelectedRouteIndex] = useState(-1);
+  const [routesLoading, setRoutesLoading] = useState(false);
+  const [selectPulse, setSelectPulse] = useState(false);
+
+  const [region, setRegion] = useState({
+    latitude: 9.9312,
+    longitude: 76.2673,
+    latitudeDelta: 0.05,
+    longitudeDelta: 0.05,
+  });
+
+  const directionsApiKey = useMemo(() => {
+    return (
+      process.env.EXPO_PUBLIC_GOOGLE_DIRECTIONS_API_KEY ||
+      process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY ||
+      ""
+    );
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      const { status } =
+        await Location.requestForegroundPermissionsAsync();
+
+      if (status !== "granted") {
+        Alert.alert(
+          "Permission Denied",
+          "We need location access to set your origin."
+        );
+        return;
+      }
+
+      try {
+        const location = await Location.getCurrentPositionAsync({});
+        const coords = {
+          latitude: location.coords.latitude,
+          longitude: location.coords.longitude,
+        };
+
+        setCurrentLocation(coords);
+
+        const nextRegion = {
+          latitude: coords.latitude,
+          longitude: coords.longitude,
+          latitudeDelta: 0.05,
+          longitudeDelta: 0.05,
+        };
+
+        setRegion(nextRegion);
+        mapRef.current?.animateToRegion(nextRegion, 500);
+      } catch {}
+    })();
+  }, []);
+
+  const handleSetCurrentLocation = async () => {
+    try {
+      const location = await Location.getCurrentPositionAsync({});
+      const coords = {
+        latitude: location.coords.latitude,
+        longitude: location.coords.longitude,
+      };
+
+      setCurrentLocation(coords);
+
+      const nextRegion = {
+        latitude: coords.latitude,
+        longitude: coords.longitude,
+        latitudeDelta: 0.05,
+        longitudeDelta: 0.05,
+      };
+
+      setRegion(nextRegion);
+
+      const reverseGeocode =
+        await Location.reverseGeocodeAsync(coords);
+
+      if (reverseGeocode.length > 0) {
+        const place = reverseGeocode[0];
+        const addressParts = [
+          place.name,
+          place.street,
+          place.city,
+          place.region,
+        ].filter(Boolean);
+
+        setOrigin(addressParts.join(", ") || "My Current Location");
+      } else {
+        setOrigin("My Current Location");
+      }
+
+      setOriginIsCurrentLocation(true);
+      mapRef.current?.animateToRegion(nextRegion, 500);
+    } catch {
+      Alert.alert("Error", "Could not fetch your current location.");
+    }
+  };
+
+  const handleConfirm = async () => {
+    if (!origin || !destination) {
+      Alert.alert(
+        "Missing Info",
+        "Please enter both origin and destination."
+      );
+      return;
+    }
+
+    try {
+      setRoutesLoading(true);
+      setRoutes([]);
+      setSelectedRouteIndex(-1);
+      setHighlightedRouteIndex(-1);
+
+      const originParam =
+        originIsCurrentLocation && currentLocation
+          ? currentLocation
+          : origin;
+
+      const result = await fetchDirectionsAlternatives({
+        origin: originParam,
+        destination,
+        apiKey: directionsApiKey,
+        maxRoutes: 3,
+      });
+
+      if (!result.length) {
+        Alert.alert(
+          "No Routes",
+          "No routes were returned for this trip."
+        );
+        return;
+      }
+
+      setRoutes(result);
+      setSelectedRouteIndex(0);
+      setHighlightedRouteIndex(0);
+    } catch (e: any) {
+      Alert.alert(
+        "Directions Error",
+        e?.message || "Could not fetch routes."
+      );
+    } finally {
+      setRoutesLoading(false);
+    }
+  };
+
+  const activeIndex =
+    selectedRouteIndex >= 0
+      ? selectedRouteIndex
+      : highlightedRouteIndex;
+
+  useEffect(() => {
+    if (!mapRef.current) return;
+    if (activeIndex < 0) return;
+
+    const coords = routes[activeIndex]?.coordinates;
+    if (!coords?.length) return;
+
+    mapRef.current.fitToCoordinates(coords, {
+      edgePadding: {
+        top: 80,
+        right: 60,
+        bottom: cardHeight.value + 40,
+        left: 60,
+      },
+      animated: true,
+    });
+  }, [activeIndex, routes]);
+
+  return (
+    <View className="flex-1 bg-white">
+      <Animated.View style={animatedMapStyle}>
+        <MapView
+          ref={(r) => (mapRef.current = r)}
+          style={{ flex: 1 }}
+          initialRegion={region}
+          onRegionChangeComplete={setRegion}
+          showsUserLocation
+          showsMyLocationButton={false}
+        >
+          {routes.map((route, index) => {
+            const isSelected = index === selectedRouteIndex;
+
+            return (
+              <Polyline
+                key={index}
+                coordinates={route.coordinates}
+                strokeColor={
+                  isSelected ? "#1565C0" : "#90CAF9"
+                }
+                strokeWidth={isSelected ? 6 : 4}
+                zIndex={isSelected ? 30 : 10}
+                tappable
+                onPress={() => {
+                  setSelectedRouteIndex(index);
+                  setHighlightedRouteIndex(index);
+                }}
+              />
+            );
+          })}
+        </MapView>
+
+        <View className="absolute top-12 left-0 right-0 items-center">
+          <View className="bg-white/80 px-6 py-2 rounded-full">
+            <Text className="text-xl font-bold text-gray-800">
+              Kerides
+            </Text>
+          </View>
+        </View>
+      </Animated.View>
+
+      <RideRequestCard
+        origin={origin}
+        destination={destination}
+        setOrigin={setOrigin}
+        setDestination={setDestination}
+        onSetCurrentLocation={handleSetCurrentLocation}
+        onDestinationSelected={handleConfirm}
+        loading={routesLoading}
+        placesApiKey={directionsApiKey}
+        routeSelected={selectedRouteIndex >= 0}
+        onProceed={(vehicle: VehicleType) =>
+          router.push({
+            pathname: "/user/nearby-vehicles",
+            params: { vehicleType: vehicle.id },
+          })
+        }
+        cardHeightShared={cardHeight}
+      />
+    </View>
+  );
+}
+
+--- app/user/(tabs)/history.tsx ---
+```tsx
+import React from "react";
+import { Text, View } from "react-native";
+
+export default function HistoryTab() {
+  return (
+    <View className="flex-1 bg-white items-center justify-center px-6">
+      <Text className="text-2xl font-bold text-gray-900">History</Text>
+      <Text className="mt-2 text-sm text-gray-500">
+        Your recent activity will appear here.
+      </Text>
+    </View>
+  );
+}
+```
+
+--- app/user/(tabs)/accounts.tsx ---
+```tsx
+import { useRouter } from "expo-router";
+import React from "react";
+import { Text, View } from "react-native";
+import { useAuth } from "../../../src/auth/AuthProvider";
+import Button from "../../../src/components/ui/Button";
+
+export default function AccountsTab() {
+  const { signOut } = useAuth();
+  const router = useRouter();
+
+  async function handleSignOut() {
+    await signOut();
+    router.replace("/user/login");
+  }
+
+  return (
+    <View className="flex-1 bg-white px-6 pt-8">
+      <Text className="text-2xl font-bold text-gray-900">Accounts</Text>
+      <Text className="mt-2 text-sm text-gray-500">
+        Manage your account and settings.
+      </Text>
+
+      <View className="mt-8">
+        <Button onPress={handleSignOut} accessibilityLabel="Sign out">
+          Sign Out
+        </Button>
+      </View>
+    </View>
+  );
+}
+```
+
+--- src/auth/session.ts ---
+```typescript
+import * as SecureStore from "expo-secure-store";
+import { Role } from "../api/auth";
+
+const TOKEN_KEY = "auth_token";
+const ROLE_KEY = "auth_role";
+const LAST_ROLE_KEY = "last_role";
+
+/* ───────── Token ───────── */
+
+export async function getToken(): Promise<string | null> {
+  return SecureStore.getItemAsync(TOKEN_KEY);
+}
+
+export async function setToken(token: string): Promise<void> {
+  await SecureStore.setItemAsync(TOKEN_KEY, token);
+}
+
+/* ───────── Role ───────── */
+
+export async function getRole(): Promise<Role | null> {
+  const v = await SecureStore.getItemAsync(ROLE_KEY);
+  return (v as Role) ?? null;
+}
+
+export async function setRole(role: Role): Promise<void> {
+  await SecureStore.setItemAsync(ROLE_KEY, role);
+  // Also persist as last-used role (survives logout)
+  await SecureStore.setItemAsync(LAST_ROLE_KEY, role);
+}
+
+/* ───────── Last Role (survives logout) ───────── */
+
+export async function getLastRole(): Promise<Role | null> {
+  const v = await SecureStore.getItemAsync(LAST_ROLE_KEY);
+  return (v as Role) ?? null;
+}
+
+/* ───────── Session helpers ───────── */
+
+export async function setSession(token: string, role: Role): Promise<void> {
+  await setToken(token);
+  await setRole(role);
+}
+
+export async function clearSession(): Promise<void> {
+  await SecureStore.deleteItemAsync(TOKEN_KEY);
+  await SecureStore.deleteItemAsync(ROLE_KEY);
+  // NOTE: lastRole is intentionally NOT cleared so we remember which login to show
+}
+
+export async function isLoggedIn(): Promise<boolean> {
+  const token = await getToken();
+  return !!token;
+}
+```
+
+--- src/auth/AuthProvider.tsx ---
+```tsx
+import React, {
+    createContext,
+    useCallback,
+    useContext,
+    useEffect,
+    useMemo,
+    useState,
+} from "react";
+import { Role } from "../api/auth";
+import {
+    clearSession as clearPersistedSession,
+    getLastRole,
+    getRole,
+    getToken,
+    setSession as persistSession,
+} from "./session";
+
+... rest of file omitted for brevity ...
+```
+
+```

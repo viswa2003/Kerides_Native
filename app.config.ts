@@ -49,7 +49,7 @@ export default ({ config }: { config: any }) => {
       [
         "expo-splash-screen",
         {
-          image: "./assets/images/splash-icon.png",
+          image: "./assets/images/Kerides Logo.png",
           imageWidth: 200,
           resizeMode: "contain",
           backgroundColor: "#ffffff",

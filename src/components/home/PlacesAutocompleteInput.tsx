@@ -27,6 +27,8 @@ type Props = {
   icon?: React.ComponentProps<typeof Feather>["name"];
   rightIconName?: React.ComponentProps<typeof Feather>["name"];
   onRightIconPress?: () => void;
+  onFocus?: () => void;
+  onBlur?: () => void;
 };
 
 export default function PlacesAutocompleteInput({
@@ -39,6 +41,8 @@ export default function PlacesAutocompleteInput({
   icon = "map-pin",
   rightIconName,
   onRightIconPress,
+  onFocus,
+  onBlur,
 }: Props) {
   const ref = useRef<GooglePlacesAutocompleteRef | null>(null);
 
@@ -95,6 +99,8 @@ export default function PlacesAutocompleteInput({
             onChangeText: (text) => {
               onChangeText(text);
             },
+            onFocus: onFocus,
+            onBlur: onBlur,
             placeholderTextColor: "#9CA3AF",
           }}
           query={{

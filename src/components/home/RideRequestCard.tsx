@@ -16,9 +16,9 @@ import VehicleTypeSelector, {
 
 const { height: SCREEN_HEIGHT } = Dimensions.get("window");
 
-const COLLAPSED_HEIGHT = 280;
-const ROUTE_SELECTED_HEIGHT = SCREEN_HEIGHT * 0.65;
-const MAX_HEIGHT = SCREEN_HEIGHT - 140; // ✅ Stops at 80%
+const COLLAPSED_HEIGHT = 380;
+const ROUTE_SELECTED_HEIGHT = SCREEN_HEIGHT * 0.85;
+const MAX_HEIGHT = SCREEN_HEIGHT - 140; 
 
 type Props = {
   origin: string;
@@ -52,6 +52,36 @@ export default function RideRequestCard({
 
   const animatedHeight = useSharedValue(COLLAPSED_HEIGHT);
   const startHeight = useSharedValue(COLLAPSED_HEIGHT);
+
+  // expand card when user interacts with text inputs (origin/destination)
+  const expandCard = () => {
+    const target = ROUTE_SELECTED_HEIGHT;
+    animatedHeight.value = withSpring(target, {
+      damping: 15,
+      stiffness: 120,
+    });
+    if (cardHeightShared) {
+      cardHeightShared.value = withSpring(target, {
+        damping: 15,
+        stiffness: 120,
+      });
+    }
+  };
+
+  const collapseCard = () => {
+    if (routeSelected) return; // keep expanded if a route is selected
+    const target = COLLAPSED_HEIGHT;
+    animatedHeight.value = withSpring(target, {
+      damping: 15,
+      stiffness: 120,
+    });
+    if (cardHeightShared) {
+      cardHeightShared.value = withSpring(target, {
+        damping: 15,
+        stiffness: 120,
+      });
+    }
+  };
 
   const animatedCardStyle = useAnimatedStyle(() => ({
     height: animatedHeight.value,
@@ -148,7 +178,7 @@ export default function RideRequestCard({
         stiffness: 120,
       });
     }
-  }, [routeSelected]);
+  }, [routeSelected, animatedHeight, cardHeightShared]);
 
   return (
     <Animated.View
@@ -162,13 +192,8 @@ export default function RideRequestCard({
         </View>
       </GestureDetector>
 
-      {/* Scrollable Content */}
-      <Animated.ScrollView
-        className="flex-1"
-        contentContainerStyle={{ paddingBottom: 40 }}
-        showsVerticalScrollIndicator={false}
-        nestedScrollEnabled
-      >
+      {/* Content – outer container no longer scrolls */}
+      <View className="flex-1" style={{ paddingBottom: 40 }}>
         <Text className="text-xl font-bold text-gray-900 mb-5">
           Where to?
         </Text>
@@ -191,6 +216,8 @@ export default function RideRequestCard({
                 icon="map-pin"
                 rightIconName="navigation"
                 onRightIconPress={onSetCurrentLocation}
+                onFocus={expandCard}
+                onBlur={collapseCard}
               />
             </View>
 
@@ -202,6 +229,8 @@ export default function RideRequestCard({
               apiKey={placesApiKey}
               icon="map"
               onPlaceSelected={onDestinationSelected}
+              onFocus={expandCard}
+              onBlur={collapseCard}
             />
           </View>
         </View>
@@ -226,7 +255,7 @@ export default function RideRequestCard({
             </View>
           </>
         )}
-      </Animated.ScrollView>
+      </View>
     </Animated.View>
   );
 }
