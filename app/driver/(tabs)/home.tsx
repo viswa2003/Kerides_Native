@@ -2,7 +2,8 @@ import * as Location from "expo-location";
 import React, { useEffect, useRef, useState } from "react";
 import { Alert, Image, StyleSheet, View } from "react-native";
 import MapView, { Marker } from "react-native-maps";
-import arrow from "../../../assets/images/map_arrow.png"
+import arrow from "../../../assets/images/map_arrow.png";
+import SlideToGoOnline from "../../../src/components/home/SlideToGoOnline";
 
 type Coords = {
   latitude: number;
@@ -15,6 +16,7 @@ export default function DriverHomeTab() {
 
   const [location, setLocation] = useState<Coords | null>(null);
   const [heading, setHeading] = useState<number>(0);
+  const [isOnline, setIsOnline] = useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -94,6 +96,22 @@ export default function DriverHomeTab() {
           </Marker>
         )}
       </MapView>
+
+      <View style={styles.sliderContainer}>
+        <SlideToGoOnline
+          isOnline={isOnline}
+          onToggle={(online) => setIsOnline(online)}
+        />
+      </View>
     </View>
   );
 }
+
+const styles = StyleSheet.create({
+  sliderContainer: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+  },
+});
