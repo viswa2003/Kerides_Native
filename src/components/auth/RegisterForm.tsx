@@ -74,9 +74,9 @@ export default function RegisterForm({ role = "USER" }: Props) {
       await signIn(resp.accessToken, resp.user.role);
 
       if (resp.user.role === "DRIVER") {
-        router.replace("/driver/home");
+        router.replace("/driver/(tabs)/home");
       } else {
-        router.replace("/user/home");
+        router.replace("/user/(tabs)/home");
       }
     } catch (err: any) {
       Alert.alert("Registration failed", err?.message || String(err));

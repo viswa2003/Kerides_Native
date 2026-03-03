@@ -16,21 +16,18 @@ export default function Index() {
   useEffect(() => {
     if (isLoading) return;
 
-    // TEMP: always open user home for testing
-    router.replace("/driver/(tabs)/home");
-
-    // if (token && role === "DRIVER") {
-    //   router.replace("/driver/home");
-    // } else if (token && role === "USER") {
-    //   router.replace("/user/home");
-    // } else {
-    //   // Not logged in — remember last role used
-    //   if (lastRole === "DRIVER") {
-    //     router.replace("/driver/login");
-    //   } else {
-    //     router.replace("/user/login");
-    //   }
-    // }
+    if (token && role === "DRIVER") {
+      router.replace("/driver/(tabs)/home");
+    } else if (token && role === "USER") {
+      router.replace("/user/(tabs)/home");
+    } else {
+      // Not logged in — remember last role used
+      if (lastRole === "DRIVER") {
+        router.replace("/(auth)/driver/login");
+      } else {
+        router.replace("/(auth)/user/login");
+      }
+    }
   }, [isLoading, token, role, lastRole, router]);
 
   // Render nothing while deciding (keeps splash visible on native)

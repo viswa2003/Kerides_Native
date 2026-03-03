@@ -1173,7 +1173,1996 @@ import {
     setSession as persistSession,
 } from "./session";
 
-... rest of file omitted for brevity ...
+type AuthState = {
+  /** null while we're still reading SecureStore on launch */
+  isLoading: boolean;
+  token: string | null;
+  role: Role | null;
+  /** Persisted even after logout — drives "remember last role" */
+  lastRole: Role | null;
+};
+
+type AuthActions = {
+  /** Call after a successful login / register */
+  signIn: (token: string, role: Role) => Promise<void>;
+  /** Clear credentials and redirect to login */
+  signOut: () => Promise<void>;
+};
+
+type AuthContextValue = AuthState & AuthActions;
+
+const AuthContext = createContext<AuthContextValue | null>(null);
+
+export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const [state, setState] = useState<AuthState>({
+    isLoading: true,
+    token: null,
+    role: null,
+    lastRole: null,
+  });
+
+  // Hydrate from SecureStore on mount
+  useEffect(() => {
+    (async () => {
+      const [token, role, lastRole] = await Promise.all([
+        getToken(),
+        getRole(),
+        getLastRole(),
+      ]);
+      setState({
+        isLoading: false,
+        token,
+        role,
+        lastRole,
+      });
+    })();
+  }, []);
+
+  const signIn = useCallback(async (token: string, role: Role) => {
+    await persistSession(token, role);
+    setState((prev) => ({ ...prev, token, role, lastRole: role }));
+  }, []);
+
+  const signOut = useCallback(async () => {
+    await clearPersistedSession();
+    setState((prev) => ({
+      ...prev,
+      token: null,
+      role: null,
+      // lastRole stays unchanged
+    }));
+  }, []);
+
+  const value = useMemo<AuthContextValue>(
+    () => ({ ...state, signIn, signOut }),
+    [state, signIn, signOut],
+  );
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+}
+
+/**
+ * Access the current auth state + actions from any component.
+ */
+export function useAuth(): AuthContextValue {
+  const ctx = useContext(AuthContext);
+  if (!ctx) {
+    throw new Error("useAuth must be used within an <AuthProvider>");
+  }
+  return ctx;
+}
+```
+
+--- src/api/auth.ts ---
+```typescript
+export type Role = "USER" | "DRIVER" | "ADMIN";
+
+
+
+function getApiBaseUrl(): string {
+  const raw = process.env.EXPO_PUBLIC_API_BASE_URL ?? "";
+  return raw.replace(/\/+$/, "");
+}
+
+function buildUrl(path: string): string {
+  const base = getApiBaseUrl();
+  if (!base) return path;
+  return `${base}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
+export type RegisterRequest = {
+  email: string;
+  password: string;
+  fullName: string;
+  phoneNumber?: string;
+  role: Role;
+};
+
+/**
+ * Call backend POST /auth/register
+ * Uses a relative URL so it works on web; replace with an absolute API_BASE if needed for native.
+ */
+export async function register(
+  payload: RegisterRequest,
+): Promise<AuthResponse> {
+  const res = await fetch(buildUrl("/auth/register"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    const message =
+      (body && (body.message || body.error)) ||
+      (await res.text()) ||
+      "Registration failed";
+    throw new Error(message);
+  }
+
+  return res.json();
+}
+
+/* ------------------ LOGIN ------------------ */
+export type LoginRequest = {
+  email: string;
+  password: string;
+};
+
+/**
+ * Call backend POST /auth/login
+ */
+export async function login(payload: LoginRequest): Promise<AuthResponse> {
+  const res = await fetch(buildUrl("/auth/login"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    const message =
+      (body && (body.message || body.error)) ||
+      (await res.text()) ||
+      "Login failed";
+    throw new Error(message);
+  }
+
+  return res.json();
+}
+```
+
+--- src/api/directions.ts ---
+```typescript
+export type DirectionsRouteOption = {
+  summary: string;
+  distanceText: string;
+  durationText: string;
+  coordinates: LatLng[];
+};
+
+import { decodePolyline, type LatLng } from "../utils/decodePolyline";
+
+export async function fetchDirectionsAlternatives(opts: {
+  origin: DirectionsOrigin;
+  destination: string;
+  apiKey: string;
+  maxRoutes?: number;
+}): Promise<DirectionsRouteOption[]> {
+  const { origin, destination, apiKey, maxRoutes = 3 } = opts;
+
+  if (!apiKey) {
+    throw new Error(
+      "Missing Google Directions API key. Set EXPO_PUBLIC_GOOGLE_DIRECTIONS_API_KEY (or EXPO_PUBLIC_GOOGLE_MAPS_API_KEY) in .env.",
+    );
+  }
+  if (!destination?.trim()) throw new Error("Destination is required");
+
+  const originParam = encodeURIComponent(originToParam(origin));
+  const destParam = encodeURIComponent(destination);
+  const keyParam = encodeURIComponent(apiKey);
+
+  const url =
+    `https://maps.googleapis.com/maps/api/directions/json?origin=${originParam}` +
+    `&destination=${destParam}` +
+    `&mode=driving&alternatives=true&key=${keyParam}`;
+
+  const res = await fetch(url);
+  const data = (await res.json()) as DirectionsApiResponse;
+
+  if (!res.ok) {
+    throw new Error(
+      data?.error_message || `Directions request failed (${res.status})`,
+    );
+  }
+
+  if (!data || data.status !== "OK") {
+    throw new Error(
+      data?.error_message || `Directions error: ${data?.status || "UNKNOWN"}`,
+    );
+  }
+
+  const routes = (data.routes ?? []).slice(0, maxRoutes);
+
+  return routes
+    .map((route) => {
+      const leg = route.legs?.[0];
+      const points = route.overview_polyline?.points ?? "";
+      const coordinates = decodePolyline(points);
+
+      return {
+        summary: route.summary || "",
+        distanceText: leg?.distance?.text || "",
+        durationText: leg?.duration?.text || "",
+        coordinates,
+      } satisfies DirectionsRouteOption;
+    })
+    .filter((r) => r.coordinates.length > 0);
+
+```
+
+--- src/utils/decodePolyline.ts ---
+```typescript
+export type LatLng = { latitude: number; longitude: number };
+
+// Decodes a Google encoded polyline into LatLng coordinates.
+// Ref: https://developers.google.com/maps/documentation/utilities/polylinealgorithm
+export function decodePolyline(encoded: string): LatLng[] {
+  if (!encoded) return [];
+
+  let index = 0;
+  const len = encoded.length;
+  let lat = 0;
+  let lng = 0;
+  const coordinates: LatLng[] = [];
+
+  while (index < len) {
+    let result = 0;
+    let shift = 0;
+    let b = 0;
+
+    do {
+      b = encoded.charCodeAt(index++) - 63;
+      result |= (b & 0x1f) << shift;
+      shift += 5;
+    } while (b >= 0x20 && index < len);
+
+    const dlat = (result & 1) !== 0 ? ~(result >> 1) : result >> 1;
+    lat += dlat;
+
+    result = 0;
+    shift = 0;
+
+    do {
+      b = encoded.charCodeAt(index++) - 63;
+      result |= (b & 0x1f) << shift;
+      shift += 5;
+    } while (b >= 0x20 && index < len);
+
+    const dlng = (result & 1) !== 0 ? ~(result >> 1) : result >> 1;
+    lng += dlng;
+
+    coordinates.push({ latitude: lat / 1e5, longitude: lng / 1e5 });
+  }
+
+  return coordinates;
+}
+```
+
+--- src/components/home/NearbyVehicleCard.tsx ---
+```tsx
+import { Feather } from "@expo/vector-icons";
+import React from "react";
+import { Image, Pressable, Text, View } from "react-native";
+
+export type NearbyVehicle = {
+  id: string;
+  vehicleName: string;
+  driverName: string;
+  price: number;
+  photo: string;
+  rating?: number;
+  eta?: string;
+};
+
+type Props = {
+  vehicle: NearbyVehicle;
+  onSelect?: (vehicle: NearbyVehicle) => void;
+};
+
+export default function NearbyVehicleCard({ vehicle, onSelect }: Props) {
+  return (
+    <Pressable
+      onPress={() => onSelect?.(vehicle)}
+      className="flex-row items-center bg-white rounded-xl p-4 mb-3 shadow-sm border border-gray-100"
+      style={{ elevation: 2 }}
+    >
+      <Image
+        source={{ uri: vehicle.photo }}
+        className="w-16 h-16 rounded-lg bg-gray-200"
+        resizeMode="cover"
+      />
+
+      <View className="flex-1 ml-4">
+        <Text className="text-base font-semibold text-gray-900">
+          {vehicle.vehicleName}
+        </Text>
+        <Text className="text-sm text-gray-500 mt-0.5">
+          {vehicle.driverName}
+        </Text>
+        {vehicle.eta ? (
+          <View className="flex-row items-center mt-1">
+            <Feather name="clock" size={12} color="#6B7280" />
+            <Text className="text-xs text-gray-400 ml-1">{vehicle.eta}</Text>
+          </View>
+        ) : null}
+      </View>
+
+      <View className="items-end">
+        <Text className="text-lg font-bold text-gray-900">
+          ₹{vehicle.price}
+        </Text>
+        {vehicle.rating ? (
+          <View className="flex-row items-center mt-1">
+            <Feather name="star" size={12} color="#F59E0B" />
+            <Text className="text-xs text-gray-500 ml-1">
+              {vehicle.rating.toFixed(1)}
+            </Text>
+          </View>
+        ) : null}
+      </View>
+    </Pressable>
+  );
+}
+```
+
+--- src/components/home/PlacesAutocompleteInput.tsx ---
+```tsx
+import { Feather } from "@expo/vector-icons";
+import React, { useEffect, useRef } from "react";
+import { Pressable, StyleSheet, Text, View } from "react-native";
+import {
+  GooglePlacesAutocomplete,
+  GooglePlacesAutocompleteRef,
+} from "react-native-google-places-autocomplete";
+
+// entire component code here exactly as earlier opened
+
+import { Feather } from "@expo/vector-icons";
+import React, { useEffect, useRef } from "react";
+import { Pressable, StyleSheet, Text, View } from "react-native";
+import {
+  GooglePlacesAutocomplete,
+  GooglePlacesAutocompleteRef,
+} from "react-native-google-places-autocomplete";
+
+type PlaceResult = {
+  description: string;
+  place_id: string;
+  geometry?: {
+    location: {
+      lat: number;
+      lng: number;
+    };
+  };
+};
+
+type Props = {
+  label?: string;
+  placeholder?: string;
+  value: string;
+  onChangeText: (text: string) => void;
+  onPlaceSelected?: (place: PlaceResult) => void;
+  apiKey: string;
+  icon?: React.ComponentProps<typeof Feather>["name"];
+  rightIconName?: React.ComponentProps<typeof Feather>["name"];
+  onRightIconPress?: () => void;
+  onFocus?: () => void;
+  onBlur?: () => void;
+};
+
+export default function PlacesAutocompleteInput({
+  label,
+  placeholder,
+  value,
+  onChangeText,
+  onPlaceSelected,
+  apiKey,
+  icon = "map-pin",
+  rightIconName,
+  onRightIconPress,
+  onFocus,
+  onBlur,
+}: Props) {
+  const ref = useRef<GooglePlacesAutocompleteRef | null>(null);
+
+  // Sync external value changes (e.g., "My Current Location") to the input
+  useEffect(() => {
+    if (ref.current) {
+      const currentText = ref.current.getAddressText();
+      if (value !== currentText) {
+        ref.current.setAddressText(value);
+      }
+    }
+  }, [value]);
+
+  return (
+    <View style={styles.container}>
+      {label ? <Text style={styles.label}>{label}</Text> : null}
+
+      <View style={styles.inputRow}>
+        <View style={styles.leftIcon}>
+          <Feather name={icon} size={18} color="#6B7280" />
+        </View>
+
+        <GooglePlacesAutocomplete
+          ref={ref}
+          placeholder={placeholder || "Search"}
+          minLength={2}
+          fetchDetails
+          onPress={(data, details = null) => {
+            const description = data.description || "";
+
+            // Set the text in the input field
+            if (ref.current) {
+              ref.current.setAddressText(description);
+            }
+
+            onChangeText(description);
+
+            if (onPlaceSelected && details?.geometry?.location) {
+              onPlaceSelected({
+                description,
+                place_id: data.place_id || "",
+                geometry: {
+                  location: {
+                    lat: details.geometry.location.lat,
+                    lng: details.geometry.location.lng,
+                  },
+                },
+              });
+            }
+          }}
+          onFail={() => {}}
+          onNotFound={() => {}}
+          textInputProps={{
+            onChangeText: (text) => {
+              onChangeText(text);
+            },
+            onFocus: onFocus,
+            onBlur: onBlur,
+            placeholderTextColor="#9CA3AF",
+          }}
+          query={{
+            key: apiKey,
+            language: "en",
+            components: "country:in", // Restrict to India; remove or change as needed
+          }}
+          requestUrl={{
+            useOnPlatform: "all",
+            url: "https://maps.googleapis.com/maps/api",
+          }}
+          keyboardShouldPersistTaps="handled"
+          listViewDisplayed="auto"
+          keepResultsAfterBlur={true}
+          styles={{
+            container: { flex: 1, zIndex: 1000 },
+            textInputContainer: {
+              backgroundColor: "transparent",
+            },
+            textInput: {
+              height: 40,
+              color: "#111827",
+              fontSize: 16,
+              backgroundColor: "transparent",
+              paddingHorizontal: 0,
+            },
+            listView: {
+              position: "absolute",
+              top: 44,
+              left: -40,
+              right: -48,
+              backgroundColor: "#fff",
+              borderRadius: 8,
+              elevation: 10,
+              shadowColor: "#000",
+              shadowOpacity: 0.15,
+              shadowRadius: 8,
+              shadowOffset: { width: 0, height: 2 },
+              zIndex: 9999,
+            },
+            row: {
+              paddingVertical: 12,
+              paddingHorizontal: 16,
+            },
+            description: {
+              fontSize: 14,
+              color: "#374151",
+            },
+            separator: {
+              height: 1,
+              backgroundColor: "#E5E7EB",
+            },
+          }}
+          enablePoweredByContainer={false}
+          debounce={300}
+        />
+
+        {rightIconName ? (
+          <Pressable
+            onPress={onRightIconPress}
+            style={styles.rightIcon}
+            accessibilityLabel="set-current-location"
+          >
+            <Feather name={rightIconName} size={18} color="#6B7280" />
+          </Pressable>
+        ) : null}
+      </View>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    width: "100%",
+    overflow: "visible",
+    zIndex: 100,
+  },
+  label: {
+    marginBottom: 4,
+    fontSize: 14,
+    fontWeight: "500",
+    color: "#374151",
+  },
+  inputRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#D1D5DB",
+    borderRadius: 6,
+    backgroundColor: "#fff",
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    zIndex: 10,
+    overflow: "visible",
+  },
+  leftIcon: {
+    marginRight: 12,
+  },
+  rightIcon: {
+    marginLeft: 12,
+  },
+});
+```
+
+--- src/components/home/RouteEndpointsMarkers.tsx ---
+```tsx
+import React from "react";
+import { View } from "react-native";
+import { Marker } from "react-native-maps";
+
+type LatLng = { latitude: number; longitude: number };
+
+type Props = {
+  start: LatLng;
+  end: LatLng;
+  pulse?: boolean;
+};
+
+export default function RouteEndpointsMarkers({
+  start,
+  end,
+  pulse = false,
+}: Props) {
+  const outerSize = pulse ? 34 : 28;
+  const glow = pulse ? 16 : 8;
+
+  return (
+    <>
+      <Marker coordinate={start} tracksViewChanges={false} zIndex={120}>
+        <View className="items-center justify-center">
+          <View
+            style={{
+              width: outerSize,
+              height: outerSize,
+              borderRadius: outerSize / 2,
+              backgroundColor: "rgba(30,144,255,0.08)",
+              shadowColor: "#1E90FF",
+              shadowOpacity: 0.35,
+              shadowRadius: glow,
+              shadowOffset: { width: 0, height: 0 },
+              elevation: pulse ? 10 : 6,
+            }}
+          />
+          <View
+            style={{
+              position: "absolute",
+              width: 14,
+              height: 14,
+              borderRadius: 7,
+              backgroundColor: "#ffffff",
+              borderWidth: 3,
+              borderColor: "#1E90FF",
+              shadowColor: "#1E90FF",
+              shadowOpacity: 0.8,
+              shadowRadius: 10,
+              shadowOffset: { width: 0, height: 0 },
+              elevation: 12,
+            }}
+          />
+        </View>
+      </Marker>
+
+      <Marker
+        coordinate={end}
+        tracksViewChanges={false}
+        zIndex={120}
+        pinColor="red"
+      />
+    </>
+  );
+}
+```
+
+--- src/components/home/RouteOptionsList.tsx ---
+```tsx
+import React from "react";
+import { Pressable, Text, View } from "react-native";
+import type { DirectionsRouteOption } from "../../api/directions";
+
+type Props = {
+  routes: DirectionsRouteOption[];
+  highlightedIndex: number;
+  selectedIndex: number;
+  onHighlightRoute: (index: number) => void;
+  onConfirmRoute: (index: number) => void;
+};
+
+export default function RouteOptionsList({
+  routes,
+  highlightedIndex,
+  selectedIndex,
+  onHighlightRoute,
+  onConfirmRoute,
+}: Props) {
+  if (!routes.length) return null;
+
+  return (
+    <View className="mt-4">
+      <Text className="text-sm font-semibold text-gray-700 mb-2">
+        Recommended Routes
+      </Text>
+
+      <View className="gap-y-2">
+        {routes.slice(0, 3).map((route, index) => {
+          const isSelected = index === selectedIndex;
+          const isHighlighted = index === highlightedIndex;
+
+          return (
+            <Pressable
+              key={index}
+              onPress={() => onHighlightRoute(index)}
+              accessibilityRole="button"
+              accessibilityState={{ selected: isSelected }}
+              className={`p-3 rounded-xl border ${
+                isSelected
+                  ? "border-blue-500 bg-blue-50"
+                  : isHighlighted
+                    ? "border-blue-200 bg-blue-50"
+                    : "border-gray-200 bg-white"
+              }`}
+            >
+              <View className="flex-row justify-between items-center mb-1">
+                <Text
+                  className={`text-sm font-bold ${
+                    isSelected
+                      ? "text-blue-700"
+                      : isHighlighted
+                        ? "text-blue-600"
+                        : "text-gray-800"
+                  }`}
+                >
+                  {index === 0 ? "Fastest Route" : `Route ${index + 1}`}
+                </Text>
+
+                {isSelected ? (
+                  <View className="px-2 py-0.5 rounded-full bg-blue-100">
+                    <Text className="text-xs font-semibold text-blue-700">
+                      Selected
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
+
+              <View className="flex-row items-center gap-x-2">
+                <Text className="text-sm text-gray-600">
+                  {route.durationText || "—"}
+                </Text>
+                <Text className="text-sm text-gray-400">|</Text>
+                <Text className="text-sm text-gray-600">
+                  {route.distanceText || "—"}
+                </Text>
+              </View>
+
+              {route.summary ? (
+                <Text className="mt-1 text-xs text-gray-500" numberOfLines={1}>
+                  via {route.summary}
+                </Text>
+              ) : null}
+
+              <View className="mt-3 flex-row justify-end">
+                <Pressable
+                  onPress={(e) => {
+                    e.stopPropagation();
+                    onConfirmRoute(index);
+                  }}
+                  accessibilityRole="button"
+                  accessibilityLabel={
+                    isSelected ? "Selected route" : `Select route ${index + 1}`
+                  }
+                  className={`px-3 py-2 rounded-lg border ${
+                    isSelected
+                      ? "bg-blue-600 border-blue-600"
+                      : "bg-white border-gray-200"
+                  }`}
+                >
+                  <Text
+                    className={`text-sm font-semibold ${
+                      isSelected ? "text-white" : "text-gray-700"
+                    }`}
+                  >
+                    {isSelected ? "Selected" : "Select"}
+                  </Text>
+                </Pressable>
+              </View>
+            </Pressable>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+```
+
+--- src/components/home/RideRequestCard.tsx ---
+```tsx
+import React, { useEffect, useState } from "react";
+import { Dimensions, Text, View } from "react-native";
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withSpring,
+  type SharedValue,
+} from "react-native-reanimated";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
+
+import Button from "../ui/Button";
+import PlacesAutocompleteInput from "./PlacesAutocompleteInput";
+import VehicleTypeSelector, {
+  type VehicleType,
+} from "./VehicleTypeSelector";
+
+const { height: SCREEN_HEIGHT } = Dimensions.get("window");
+
+const COLLAPSED_HEIGHT = 380;
+const ROUTE_SELECTED_HEIGHT = SCREEN_HEIGHT * 0.85;
+const MAX_HEIGHT = SCREEN_HEIGHT - 140; 
+
+// (rest of code from earlier)
+
+import React, { useEffect, useState } from "react";
+import { Dimensions, Text, View } from "react-native";
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withSpring,
+  type SharedValue,
+} from "react-native-reanimated";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
+
+import Button from "../ui/Button";
+import PlacesAutocompleteInput from "./PlacesAutocompleteInput";
+import VehicleTypeSelector, {
+  type VehicleType,
+} from "./VehicleTypeSelector";
+
+const { height: SCREEN_HEIGHT } = Dimensions.get("window");
+
+const COLLAPSED_HEIGHT = 380;
+const ROUTE_SELECTED_HEIGHT = SCREEN_HEIGHT * 0.85;
+const MAX_HEIGHT = SCREEN_HEIGHT - 140; 
+
+import React, { useEffect, useState } from "react";
+import { Dimensions, Text, View } from "react-native";
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withSpring,
+  type SharedValue,
+} from "react-native-reanimated";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
+
+import Button from "../ui/Button";
+import PlacesAutocompleteInput from "./PlacesAutocompleteInput";
+import VehicleTypeSelector, {
+  type VehicleType,
+} from "./VehicleTypeSelector";
+
+const { height: SCREEN_HEIGHT } = Dimensions.get("window");
+
+const COLLAPSED_HEIGHT = 380;
+const ROUTE_SELECTED_HEIGHT = SCREEN_HEIGHT * 0.85;
+const MAX_HEIGHT = SCREEN_HEIGHT - 140; 
+
+type Props = {
+  origin: string;
+  destination: string;
+  onSetCurrentLocation: () => void;
+  setOrigin: (v: string) => void;
+  setDestination: (v: string) => void;
+  onDestinationSelected: () => void;
+  loading?: boolean;
+  placesApiKey?: string;
+  routeSelected?: boolean;
+  onProceed?: (vehicle: VehicleType) => void;
+  cardHeightShared?: SharedValue<number>;
+};
+
+export default function RideRequestCard({
+  origin,
+  destination,
+  onSetCurrentLocation,
+  setOrigin,
+  setDestination,
+  onDestinationSelected,
+  loading = false,
+  placesApiKey = "",
+  routeSelected = false,
+  onProceed,
+  cardHeightShared,
+}: Props) {
+  const [selectedVehicle, setSelectedVehicle] =
+    useState<VehicleType | null>(null);
+
+  const animatedHeight = useSharedValue(COLLAPSED_HEIGHT);
+  const startHeight = useSharedValue(COLLAPSED_HEIGHT);
+
+  // expand card when user interacts with text inputs (origin/destination)
+  const expandCard = () => {
+    const target = ROUTE_SELECTED_HEIGHT;
+    animatedHeight.value = withSpring(target, {
+      damping: 15,
+      stiffness: 120,
+    });
+    if (cardHeightShared) {
+      cardHeightShared.value = withSpring(target, {
+        damping: 15,
+        stiffness: 120,
+      });
+    }
+  };
+
+  const collapseCard = () => {
+    if (routeSelected) return; // keep expanded if a route is selected
+    const target = COLLAPSED_HEIGHT;
+    animatedHeight.value = withSpring(target, {
+      damping: 15,
+      stiffness: 120,
+    });
+    if (cardHeightShared) {
+      cardHeightShared.value = withSpring(target, {
+        damping: 15,
+        stiffness: 120,
+      });
+    }
+  };
+
+  const animatedCardStyle = useAnimatedStyle(() => ({
+    height: animatedHeight.value,
+  }));
+
+  /*
+    -----------------------------
+    Gesture Logic (UI Thread)
+    -----------------------------
+  */
+
+  const panGesture = Gesture.Pan()
+    .onStart(() => {
+      // Anchor height when gesture begins
+      startHeight.value = animatedHeight.value;
+    })
+    .onUpdate((event) => {
+      const newHeight =
+        startHeight.value - event.translationY;
+
+      const clampedHeight = Math.max(
+        COLLAPSED_HEIGHT,
+        Math.min(MAX_HEIGHT, newHeight)
+      );
+
+      animatedHeight.value = clampedHeight;
+
+      if (cardHeightShared) {
+        cardHeightShared.value = clampedHeight;
+      }
+    })
+    .onEnd((event) => {
+      const velocity = event.velocityY;
+
+      const stops = routeSelected
+        ? [COLLAPSED_HEIGHT, ROUTE_SELECTED_HEIGHT, MAX_HEIGHT]
+        : [COLLAPSED_HEIGHT, ROUTE_SELECTED_HEIGHT];
+
+      let targetHeight: number;
+
+      if (velocity > 800) {
+        // Fast downward flick
+        targetHeight =
+          stops
+            .filter((s) => s < animatedHeight.value)
+            .pop() ?? COLLAPSED_HEIGHT;
+      } else if (velocity < -800) {
+        // Fast upward flick
+        targetHeight =
+          stops.find((s) => s > animatedHeight.value) ??
+          stops[stops.length - 1];
+      } else {
+        // Snap to closest stop
+        targetHeight = stops.reduce((prev, curr) =>
+          Math.abs(curr - animatedHeight.value) <
+          Math.abs(prev - animatedHeight.value)
+            ? curr
+            : prev
+        );
+      }
+
+      animatedHeight.value = withSpring(targetHeight, {
+        damping: 15,
+        stiffness: 120,
+      });
+
+      if (cardHeightShared) {
+        cardHeightShared.value = withSpring(targetHeight, {
+          damping: 15,
+          stiffness: 120,
+        });
+      }
+    });
+
+  /*
+    -----------------------------
+    Auto expand on route selection
+    -----------------------------
+  */
+
+  useEffect(() => {
+    const targetHeight = routeSelected
+      ? ROUTE_SELECTED_HEIGHT
+      : COLLAPSED_HEIGHT;
+
+    animatedHeight.value = withSpring(targetHeight, {
+      damping: 15,
+      stiffness: 120,
+    });
+
+    if (cardHeightShared) {
+      cardHeightShared.value = withSpring(targetHeight, {
+        damping: 15,
+        stiffness: 120,
+      });
+    }
+  }, [routeSelected, animatedHeight, cardHeightShared]);
+
+  return (
+    <Animated.View
+      className="w-full bg-white rounded-t-3xl shadow-2xl px-6 pt-2 pb-10 elevation-5"
+      style={animatedCardStyle}
+    >
+      {/* Drag Handle Only */}
+      <GestureDetector gesture={panGesture}>
+        <View className="items-center py-4">
+          <View className="w-12 h-1.5 bg-gray-300 rounded-full" />
+        </View>
+      </GestureDetector>
+
+      {/* Content – outer container no longer scrolls */}
+      <View className="flex-1" style={{ paddingBottom: 40 }}>
+        <Text className="text-xl font-bold text-gray-900 mb-5">
+          Where to?
+        </Text>
+
+        <View className="flex-row mb-6">
+          <View className="items-center justify-center mr-4 pt-4 pb-2">
+            <View className="w-2 h-2 rounded-full bg-gray-400" />
+            <View className="w-0.5 h-12 bg-gray-300 my-1" />
+            <View className="w-2 h-2 bg-black" />
+          </View>
+
+          <View className="flex-1">
+            <View className="mb-3">
+              <PlacesAutocompleteInput
+                label="Origin"
+                placeholder="Enter origin or use current location"
+                value={origin}
+                onChangeText={setOrigin}
+                apiKey={placesApiKey}
+                icon="map-pin"
+                rightIconName="navigation"
+                onRightIconPress={onSetCurrentLocation}
+                onFocus={expandCard}
+                onBlur={collapseCard}
+              />
+            </View>
+
+            <PlacesAutocompleteInput
+              label="Destination"
+              placeholder="Enter destination"
+              value={destination}
+              onChangeText={setDestination}
+              apiKey={placesApiKey}
+              icon="map"
+              onPlaceSelected={onDestinationSelected}
+              onFocus={expandCard}
+              onBlur={collapseCard}
+            />
+          </View>
+        </View>
+
+        {routeSelected && (
+          <>
+            <VehicleTypeSelector
+              onSelect={setSelectedVehicle}
+            />
+
+            <View className="mt-4">
+              <Button
+                onPress={() =>
+                  selectedVehicle &&
+                  onProceed?.(selectedVehicle)
+                }
+                disabled={!selectedVehicle}
+                accessibilityLabel="Proceed with ride"
+              >
+                Proceed
+              </Button>
+            </View>
+          </>
+        )}
+      </View>
+    </Animated.View>
+  );
+}
+
+```
+
+
+--- src/components/home/SlideToGoOnline.tsx ---
+```tsx
+import { MaterialCommunityIcons } from "@expo/vector-icons";
+import React from "react";
+import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
+import Animated, {
+  interpolate,
+  interpolateColor,
+  runOnJS,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+} from "react-native-reanimated";
+
+const KNOB_SIZE = 56;
+const TRACK_H = 64;
+const TRACK_PADDING = 4;
+const SPRING_CONFIG = { damping: 40, stiffness: 200 };
+
+import { MaterialCommunityIcons } from "@expo/vector-icons";
+import React from "react";
+import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
+import Animated, {
+  interpolate,
+  interpolateColor,
+  runOnJS,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+} from "react-native-reanimated";
+
+const KNOB_SIZE = 56;
+const TRACK_H = 64;
+const TRACK_PADDING = 4;
+const SPRING_CONFIG = { damping: 40, stiffness: 200 };
+
+type Props = {
+  isOnline: boolean;
+  onToggle: (online: boolean) => void;
+};
+
+export default function SlideToGoOnline({ isOnline, onToggle }: Props) {
+  const translateX = useSharedValue(0);
+  const maxX = useSharedValue(0);
+
+  const gesture = Gesture.Pan()
+    .enabled(!isOnline)
+    .onStart(() => {
+      // no-op
+    })
+    .onUpdate((e) => {
+      translateX.value = Math.max(0, Math.min(e.translationX, maxX.value));
+    })
+    .onEnd(() => {
+      if (maxX.value > 0 && translateX.value >= maxX.value * 0.75) {
+        translateX.value = withSpring(maxX.value, SPRING_CONFIG);
+        runOnJS(onToggle)(true);
+      } else {
+        translateX.value = withSpring(0, SPRING_CONFIG);
+      }
+    });
+
+  const knobStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: translateX.value }],
+  }));
+
+  const labelStyle = useAnimatedStyle(() => {
+    const max = maxX.value || 1;
+    return {
+      opacity: interpolate(translateX.value, [0, max * 0.5], [1, 0], "clamp"),
+    };
+  });
+
+  const trackAnimStyle = useAnimatedStyle(() => {
+    const max = maxX.value || 1;
+    const bg = interpolateColor(
+      translateX.value,
+      [0, max],
+      ["#F0FDF4", "#16A34A"] // green-50 → green-600
+    );
+    return { backgroundColor: bg };
+  });
+
+  const handleLayout = (e: { nativeEvent: { layout: { width: number } } }) => {
+    maxX.value = e.nativeEvent.layout.width - KNOB_SIZE - TRACK_PADDING * 2;
+  };
+
+  if (isOnline) {
+    return (
+      <View style={styles.wrapper}>
+        <Pressable
+          onPress={() => {
+            translateX.value = withSpring(0, SPRING_CONFIG);
+            onToggle(false);
+          }}
+          style={[styles.track, { backgroundColor: "#16A34A" }]}
+        >
+          <View style={styles.onlineContent}>
+            <View style={styles.dot} />
+            <Text style={styles.onlineText}>You are Online</Text>
+          </View>
+          <Text style={styles.tapHint}>Tap to go offline</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.wrapper}>
+      <GestureDetector gesture={gesture}>
+        <Animated.View
+          style={[styles.track, trackAnimStyle]}
+          onLayout={handleLayout}
+        >
+          <Animated.View style={[styles.labelContainer, labelStyle]}>
+            <Text style={styles.label}>Slide to go online</Text>
+          </Animated.View>
+
+          <Animated.View style={[styles.knob, knobStyle]}>
+            <MaterialCommunityIcons
+              name="chevron-double-right"
+              size={28}
+              color="#fff"
+            />
+          </Animated.View>
+        </Animated.View>
+      </GestureDetector>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  wrapper: {
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+  },
+  track: {
+    height: TRACK_H,
+    borderRadius: TRACK_H / 2,
+    padding: TRACK_PADDING,
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "#BBF7D0", // green-200
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  labelContainer: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  label: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#15803D", // green-700
+    letterSpacing: 0.5,
+  },
+  knob: {
+    width: KNOB_SIZE,
+    height: KNOB_SIZE,
+    borderRadius: KNOB_SIZE / 2,
+    backgroundColor: "#16A34A", // green-600
+    justifyContent: "center",
+    alignItems: "center",
+    shadowColor: "#16A34A",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 4,
+  },
+  onlineContent: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  dot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: "#fff",
+    marginRight: 8,
+  },
+  onlineText: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#fff",
+    letterSpacing: 0.5,
+  },
+  tapHint: {
+    position: "absolute",
+    bottom: 6,
+    alignSelf: "center",
+    fontSize: 11,
+    color: "rgba(255,255,255,0.7)",
+  },
+});
+```
+```
+
+
+--- src/components/home/VehicleTypeSelector.tsx ---
+```tsx
+import React, { useState } from "react";
+import { Pressable, Text, View } from "react-native";
+
+export type VehicleType = {
+  id: string;
+  label: string;
+};
+
+const VEHICLE_TYPES: VehicleType[] = [
+  { id: "auto", label: "Auto" },
+  { id: "bike", label: "Bike" },
+  { id: "hatchback", label: "Hatchback" },
+  { id: "sedan", label: "Sedan" },
+  { id: "suv", label: "SUV" },
+];
+
+type Props = {
+  onSelect?: (vehicle: VehicleType) => void;
+};
+
+export default function VehicleTypeSelector({ onSelect }: Props) {
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  const handlePress = (vehicle: VehicleType) => {
+    setSelectedId(vehicle.id);
+    onSelect?.(vehicle);
+  };
+
+  return (
+    <View className="mt-4">
+      <Text className="text-sm font-semibold text-gray-700 mb-3">
+        Choose Vehicle
+      </Text>
+      <View className="gap-y-2">
+        {VEHICLE_TYPES.map((vehicle) => {
+          const isSelected = vehicle.id === selectedId;
+          return (
+            <Pressable
+              key={vehicle.id}
+              onPress={() => handlePress(vehicle)}
+              className={`flex-row items-center rounded-xl px-4 py-3 ${
+                isSelected
+                  ? "bg-blue-600 border border-blue-600"
+                  : "bg-gray-50 border border-gray-200"
+              }`}
+              accessibilityRole="button"
+              accessibilityLabel={vehicle.label}
+            >
+              <Text
+                className={`text-base font-medium flex-1 ${
+                  isSelected ? "text-white" : "text-gray-800"
+                }`}
+                numberOfLines={1}
+              >
+                {vehicle.label}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+```
+
+--- src/components/auth/LoginForm.tsx ---
+```tsx
+import { Feather } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
+import React, { useState } from "react";
+import { Alert, Linking, Text, View } from "react-native";
+import { login, LoginRequest, Role } from "../../api/auth";
+import { useAuth } from "../../auth/AuthProvider";
+import Button from "../ui/Button";
+import TextField from "../ui/TextField";
+
+type Props = {
+  role?: Role;
+  onSuccess?: (resp: any) => void;
+};
+
+function isEmail(value: string) {
+  return /\S+@\S+\.\S+/.test(value);
+}
+
+/**
+ * Reusable login form used by both User and Driver login pages.
+ */
+export default function LoginForm({ role = "USER", onSuccess }: Props) {
+  const router = useRouter();
+  const { signIn } = useAuth();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [errors, setErrors] = useState<Record<string, string | null>>({});
+  const [loading, setLoading] = useState(false);
+
+  function validate() {
+    const e: typeof errors = {};
+    if (!isEmail(email)) e.email = "Enter a valid email";
+    if (!password) e.password = "Enter your password";
+    setErrors(e);
+    return Object.keys(e).length === 0;
+  }
+
+  async function onSubmit() {
+    if (!validate()) return;
+    setLoading(true);
+
+    const payload: LoginRequest = {
+      email: email.trim().toLowerCase(),
+      password,
+      role, // send desired role so backend can enforce portal-specific login
+    };
+
+    try {
+      const resp = await login(payload);
+      await signIn(resp.accessToken, resp.user.role);
+      onSuccess?.(resp);
+
+      // Navigate to the correct role-specific home
+      if (resp.user.role === "DRIVER") {
+        router.replace("/driver/home");
+      } else {
+        router.replace("/user/home");
+      }
+    } catch (err: any) {
+      Alert.alert("Login failed", err?.message || String(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <View className="w-full max-w-md">
+      <View className="mb-4">
+        <TextField
+          label="Email Address"
+          value={email}
+          onChangeText={setEmail}
+          placeholder="you@example.com"
+          keyboardType="email-address"
+          autoComplete="email"
+          textContentType="emailAddress"
+          error={errors.email || null}
+          leftIcon={<Feather name="mail" size={18} color="#6B7280" />}
+        />
+      </View>
+
+      <View className="mb-4">
+        <TextField
+          label="Password"
+          value={password}
+          onChangeText={setPassword}
+          placeholder="Enter your password"
+          secureTextEntry={!showPassword}
+          textContentType="password"
+          error={errors.password || null}
+          leftIcon={<Feather name="lock" size={18} color="#6B7280" />}
+          rightIcon={
+            <Feather
+              name={showPassword ? "eye-off" : "eye"}
+              size={18}
+              color="#6B7280"
+              onPress={() => setShowPassword((v) => !v)}
+            />
+          }
+        />
+      </View>
+
+      <View className="flex-row justify-between items-center mb-4">
+        <Text className="text-sm text-gray-500">&nbsp;</Text>
+        <Text
+          className="text-sm text-primary-600"
+          onPress={() => Linking.openURL("/forgot-password")}
+        >
+          Forgot password?
+        </Text>
+      </View>
+
+      <Button onPress={onSubmit} loading={loading} accessibilityLabel="Sign in">
+        Sign in
+      </Button>
+    </View>
+  );
+}
+```
+
+--- src/components/auth/RegisterForm.tsx ---
+```tsx
+import { Feather } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
+import React, { useState } from "react";
+import { Alert, Linking, Pressable, Text, View } from "react-native";
+import { register, RegisterRequest, Role } from "../../api/auth";
+import { useAuth } from "../../auth/AuthProvider";
+import Button from "../ui/Button";
+import Card from "../ui/Card";
+import Checkbox from "../ui/Checkbox";
+import TextField from "../ui/TextField";
+
+type Props = {
+  role?: Role;
+};
+
+function isEmail(value: string) {
+  return /\S+@\S+\.\S+/.test(value);
+}
+
+function isStrongPassword(value: string) {
+  return value.length >= 8;
+}
+
+function isValidPhoneNumber(value: string) {
+  return /^[6-9]\d{9}$/.test(value);
+}
+
+export default function RegisterForm({ role = "USER" }: Props) {
+  const router = useRouter();
+  const { signIn } = useAuth();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [fullName, setFullName] = useState("");
+  const [phoneNumber, setPhoneNumber] = useState("");
+
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [acceptTerms, setAcceptTerms] = useState(false);
+
+  const [errors, setErrors] = useState<Record<string, string | null>>({});
+  const [loading, setLoading] = useState(false);
+
+  function validate() {
+    const e: typeof errors = {};
+    if (!fullName.trim()) e.fullName = "Full name is required";
+    if (!isEmail(email)) e.email = "Enter a valid email";
+    if (!phoneNumber.trim()) e.phoneNumber = "Phone number is required";
+    else if (!isValidPhoneNumber(phoneNumber.trim()))
+      e.phoneNumber = "Enter a valid 10-digit phone number";
+    if (!isStrongPassword(password))
+      e.password = "Password must be at least 8 characters";
+    if (password !== confirmPassword)
+      e.confirmPassword = "Passwords do not match";
+    if (!acceptTerms) e.terms = "You must accept the Terms of Service";
+    setErrors(e);
+    return Object.keys(e).length === 0;
+  }
+
+  async function onSubmit() {
+    if (!validate()) return;
+    setLoading(true);
+
+    const payload: RegisterRequest = {
+      email: email.trim().toLowerCase(),
+      password,
+      fullName: fullName.trim(),
+      phoneNumber: phoneNumber.trim(),
+      role,
+    };
+
+    try {
+      const resp = await register(payload);
+      await signIn(resp.accessToken, resp.user.role);
+
+      if (resp.user.role === "DRIVER") {
+        router.replace("/driver/home");
+      } else {
+        router.replace("/user/home");
+      }
+    } catch (err: any) {
+      Alert.alert("Registration failed", err?.message || String(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <Card className="w-full max-w-md">
+      <View className="mb-4">
+        <TextField
+          label="Full name"
+          value={fullName}
+          onChangeText={setFullName}
+          placeholder="John Doe"
+          autoComplete="name"
+          textContentType="name"
+          error={errors.fullName || null}
+          leftIcon={<Feather name="user" size={18} color="#6B7280" />}
+        />
+      </View>
+
+      <View className="mb-4">
+        <TextField
+          label="Email Address"
+          value={email}
+          onChangeText={setEmail}
+          placeholder="your@email.com"
+          keyboardType="email-address"
+          autoComplete="email"
+          textContentType="emailAddress"
+          error={errors.email || null}
+          leftIcon={<Feather name="mail" size={18} color="#6B7280" />}
+        />
+      </View>
+
+      <View className="mb-4">
+        <TextField
+          label="Phone Number"
+          value={phoneNumber}
+          onChangeText={setPhoneNumber}
+          placeholder="9876543210"
+          keyboardType="phone-pad"
+          autoComplete="tel"
+          leftIcon={<Feather name="phone" size={18} color="#6B7280" />}
+          error={errors.phoneNumber || null}
+        />
+      </View>
+
+      <View className="mb-4">
+        <TextField
+          label="Password"
+          value={password}
+          onChangeText={setPassword}
+          placeholder="Create a strong password"
+          secureTextEntry={!showPassword}
+          textContentType="newPassword"
+          error={errors.password || null}
+          leftIcon={<Feather name="lock" size={18} color="#6B7280" />}
+          rightIcon={
+            <Pressable
+              onPress={() => setShowPassword((v) => !v)}
+              accessibilityLabel={
+                showPassword ? "Hide password" : "Show password"
+              }
+            >
+              <Feather
+                name={showPassword ? "eye-off" : "eye"}
+                size={18}
+                color="#6B7280"
+              />
+            </Pressable>
+          }
+        />
+      </View>
+
+      <View className="mb-4">
+        <TextField
+          label="Confirm Password"
+          value={confirmPassword}
+          onChangeText={setConfirmPassword}
+          placeholder="Confirm your password"
+          secureTextEntry={!showConfirm}
+          textContentType="password"
+          error={errors.confirmPassword || null}
+          leftIcon={<Feather name="lock" size={18} color="#6B7280" />}
+          rightIcon={
+            <Pressable
+              onPress={() => setShowConfirm((v) => !v)}
+              accessibilityLabel={
+                showConfirm ? "Hide password" : "Show password"
+              }
+            >
+              <Feather
+                name={showConfirm ? "eye-off" : "eye"}
+                size={18}
+                color="#6B7280" />(Error: truncated from type)
+            </Pressable>
+          }
+        />
+      </View>
+
+      <View className="mb-4">
+        <Checkbox checked={acceptTerms} onValueChange={setAcceptTerms}>
+          <Text>
+            I agree to the {" "}
+            <Text
+              className="text-primary-600 font-medium"
+              onPress={() => Linking.openURL("https://example.com/terms")}
+            >
+              Terms of Service
+            </Text>{" "}
+            and {" "}
+            <Text
+              className="text-primary-600 font-medium"
+              onPress={() => Linking.openURL("https://example.com/privacy")}
+            >
+              Privacy Policy
+            </Text>
+          </Text>
+        </Checkbox>
+        {errors.terms ? (
+          <Text className="mt-2 text-sm text-red-600" accessibilityRole="alert">
+            {errors.terms}
+          </Text>
+        ) : null}
+      </View>
+
+      <View className="mt-2">
+        <Button
+          onPress={onSubmit}
+          loading={loading}
+          accessibilityLabel="Create account"
+        >
+          Create Account
+        </Button>
+      </View>
+    </Card>
+  );
+}
+```
+
+--- src/components/ui/Button.tsx ---
+```tsx
+import React from "react";
+import {
+  ActivityIndicator,
+  Pressable,
+  PressableProps,
+  Text,
+} from "react-native";
+
+export type ButtonProps = {
+  children: React.ReactNode;
+  variant?: "primary" | "secondary" | "ghost" | "success";
+  loading?: boolean;
+  className?: string;
+} & PressableProps;
+
+/**
+ * Simple accessible button with variants. Merges incoming `className` so callers
+ * can pass layout classes (e.g. `flex-[2]`).
+ */
+export default function Button({
+  children,
+  onPress,
+  variant = "primary",
+  loading = false,
+  disabled,
+  accessibilityLabel,
+  className: incomingClassName,
+  ...rest
+}: ButtonProps) {
+  const base =
+    "rounded-md px-4 py-2 items-center justify-center transition-colors";
+  const variantClass =
+    variant === "primary"
+      ? "bg-primary-600 hover:bg-primary-700 focus-visible:ring-2 focus-visible:ring-primary-500"
+      : variant === "success"
+        ? "bg-green-600 hover:bg-green-700 focus-visible:ring-2 focus-visible:ring-green-500"
+        : variant === "secondary"
+          ? "bg-gray-100"
+          : "bg-transparent";
+  const textClass =
+    variant === "primary" || variant === "success"
+      ? "text-white"
+      : "text-gray-900";
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      onPress={onPress}
+      disabled={disabled || loading}
+      className={`${base} ${variantClass} ${incomingClassName ?? ""} ${disabled ? "opacity-50" : "opacity-100"}`}
+      {...rest}
+    >
+      {loading ? (
+        <ActivityIndicator
+          color={
+            variant === "primary" || variant === "success" ? "#fff" : "#111827"
+          }
+        />
+      ) : (
+        <Text className={`${textClass} font-semibold`}>{children}</Text>
+      )}
+    </Pressable>
+  );
+}
+```
+
+--- src/components/ui/Card.tsx ---
+```tsx
+import React from "react";
+import { View } from "react-native";
+
+export type CardProps = {
+  children: React.ReactNode;
+  className?: string;
+};
+
+/** Lightweight card wrapper used for auth pages */
+export default function Card({ children, className = "" }: CardProps) {
+  return (
+    <View className={`bg-white rounded-lg p-6 shadow ${className}`}>
+      {children}
+    </View>
+  );
+}
+```
+
+--- src/components/ui/Checkbox.tsx ---
+```tsx
+import { MaterialIcons } from "@expo/vector-icons";
+import React from "react";
+import { Pressable, Text, View } from "react-native";
+
+type Props = {
+  checked: boolean;
+  onValueChange: (value: boolean) => void;
+  children?: React.ReactNode;
+  accessibilityLabel?: string;
+};
+
+/**
+ * Simple accessible checkbox used on forms.
+ */
+export default function Checkbox({
+  checked,
+  onValueChange,
+  children,
+  accessibilityLabel,
+}: Props) {
+  return (
+    <Pressable
+      onPress={() => onValueChange(!checked)}
+      accessibilityRole="checkbox"
+      accessibilityState={{ checked }}
+      accessibilityLabel={accessibilityLabel}
+      className="flex-row items-start space-x-3"
+    >
+      <View
+        className={`w-5 h-5 rounded-sm border flex items-center justify-center ${
+          checked
+            ? "bg-primary-600 border-primary-600"
+            : "bg-white border-gray-300"
+        }`}
+      >
+        {checked ? <MaterialIcons name="check" size={14} color="#fff" /> : null}
+      </View>
+
+      <View className="flex-1">
+        <Text className="text-sm text-gray-700">{children}</Text>
+      </View>
+    </Pressable>
+  );
+}
+```
+
+--- src/components/ui/TextField.tsx ---
+```tsx
+import React, { forwardRef } from "react";
+import { Text, TextInput, TextInputProps, View } from "react-native";
+
+/**
+ * Accessible text field used across auth forms.
+ * Supports optional `leftIcon` and `rightIcon` nodes so inputs can show icons/buttons.
+ */
+export type TextFieldProps = {
+  label?: string;
+  error?: string | null;
+  containerClassName?: string;
+  leftIcon?: React.ReactNode;
+  rightIcon?: React.ReactNode;
+} & TextInputProps;
+
+const TextField = forwardRef<TextInput, TextFieldProps>(
+  (
+    { label, error, containerClassName = "", leftIcon, rightIcon, ...props },
+    ref,
+  ) => {
+    return (
+      <View className={`w-full ${containerClassName}`}>
+        {label ? (
+          <Text className="mb-1 text-sm font-medium text-gray-700">
+            {label}
+          </Text>
+        ) : null}
+
+        <View
+          className={`flex-row items-center rounded-md border border-gray-300 bg-white px-3 py-2 ${
+            props.editable === false ? "opacity-60" : ""
+          }`}
+        >
+          {leftIcon ? <View className="mr-3">{leftIcon}</View> : null}
+
+          <TextInput
+            ref={ref}
+            {...props}
+            className="flex-1 text-base text-gray-900"
+            accessibilityLabel={props.accessibilityLabel || label}
+            placeholderTextColor="#9CA3AF"
+          />
+
+          {rightIcon ? <View className="ml-3">{rightIcon}</View> : null}
+        </View>
+
+        {error ? (
+          <Text className="mt-1 text-sm text-red-600" accessibilityRole="alert">
+            {error}
+          </Text>
+        ) : null}
+      </View>
+    );
+  },
+);
+
+TextField.displayName = "TextField";
+export default TextField;
+```
+
+--- UPDATED src/components/auth/RegisterForm.tsx ---
+```tsx
+import { Feather } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
+import React, { useState } from "react";
+import { Alert, Linking, Pressable, Text, View } from "react-native";
+import { register, RegisterRequest, Role } from "../../api/auth";
+import { useAuth } from "../../auth/AuthProvider";
+import Button from "../ui/Button";
+import Card from "../ui/Card";
+import Checkbox from "../ui/Checkbox";
+import TextField from "../ui/TextField";
+
+type Props = {
+  role?: Role;
+};
+
+function isEmail(value: string) {
+  return /\S+@\S+\.\S+/.test(value);
+}
+
+function isStrongPassword(value: string) {
+  return value.length >= 8;
+}
+
+function isValidPhoneNumber(value: string) {
+  return /^[6-9]\d{9}$/.test(value);
+}
+
+export default function RegisterForm({ role = "USER" }: Props) {
+  const router = useRouter();
+  const { signIn } = useAuth();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [fullName, setFullName] = useState("");
+  const [phoneNumber, setPhoneNumber] = useState("");
+
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [acceptTerms, setAcceptTerms] = useState(false);
+
+  const [errors, setErrors] = useState<Record<string, string | null>>({});
+  const [loading, setLoading] = useState(false);
+
+  function validate() {
+    const e: typeof errors = {};
+    if (!fullName.trim()) e.fullName = "Full name is required";
+    if (!isEmail(email)) e.email = "Enter a valid email";
+    if (!phoneNumber.trim()) e.phoneNumber = "Phone number is required";
+    else if (!isValidPhoneNumber(phoneNumber.trim()))
+      e.phoneNumber = "Enter a valid 10-digit phone number";
+    if (!isStrongPassword(password))
+      e.password = "Password must be at least 8 characters";
+    if (password !== confirmPassword)
+      e.confirmPassword = "Passwords do not match";
+    if (!acceptTerms) e.terms = "You must accept the Terms of Service";
+    setErrors(e);
+    return Object.keys(e).length === 0;
+  }
+
+  async function onSubmit() {
+    if (!validate()) return;
+    setLoading(true);
+
+    const payload: RegisterRequest = {
+      email: email.trim().toLowerCase(),
+      password,
+      fullName: fullName.trim(),
+      phoneNumber: phoneNumber.trim(),
+      role,
+    };
+
+    try {
+      const resp = await register(payload);
+      await signIn(resp.accessToken, resp.user.role);
+
+      if (resp.user.role === "DRIVER") {
+        router.replace("/driver/(tabs)/home");
+      } else {
+        router.replace("/user/(tabs)/home");
+      }
+    } catch (err: any) {
+      Alert.alert("Registration failed", err?.message || String(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <Card className="w-full max-w-md">
+      <View className="mb-4">
+        <TextField
+          label="Full name"
+          value={fullName}
+          onChangeText={setFullName}
+          placeholder="John Doe"
+          autoComplete="name"
+          textContentType="name"
+          error={errors.fullName || null}
+          leftIcon={<Feather name="user" size={18} color="#6B7280" />}
+        />
+      </View>
+
+      {/* rest of component same as updated file above */}
 ```
 
 ```
+
+```--- UPDATED REGISTERFORM 2026-03-03 ---
+--- UPDATED LOGINFORM 2026-03-03 ---

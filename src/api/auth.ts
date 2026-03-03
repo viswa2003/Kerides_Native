@@ -61,6 +61,7 @@ export async function register(
 export type LoginRequest = {
   email: string;
   password: string;
+  role: Role;
 };
 
 /**

@@ -43,6 +43,7 @@ export default function LoginForm({ role = "USER", onSuccess }: Props) {
     const payload: LoginRequest = {
       email: email.trim().toLowerCase(),
       password,
+      role, // send desired role so backend can enforce portal-specific login
     };
 
     try {
@@ -52,9 +53,9 @@ export default function LoginForm({ role = "USER", onSuccess }: Props) {
 
       // Navigate to the correct role-specific home
       if (resp.user.role === "DRIVER") {
-        router.replace("/driver/home");
+        router.replace("/driver/(tabs)/home");
       } else {
-        router.replace("/user/home");
+        router.replace("/user/(tabs)/home");
       }
     } catch (err: any) {
       Alert.alert("Login failed", err?.message || String(err));
