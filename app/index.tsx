@@ -14,6 +14,11 @@ export default function Index() {
   const { isLoading, token, role, lastRole } = useAuth();
 
   useEffect(() => {
+    // === TEMPORARY BYPASS: skip auth, go straight to driver home for testing ===
+    router.replace("/driver/(tabs)/home");
+    return;
+    // === END TEMPORARY BYPASS ===
+
     if (isLoading) return;
 
     if (token && role === "DRIVER") {

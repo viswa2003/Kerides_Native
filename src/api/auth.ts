@@ -85,3 +85,48 @@ export async function login(payload: LoginRequest): Promise<AuthResponse> {
 
   return res.json();
 }
+
+/* ------------------ EMAIL OTP ------------------ */
+
+export async function sendOtp(
+  email: string,
+): Promise<{ message: string; expiresIn: number }> {
+  const res = await fetch(buildUrl("/auth/send-otp"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email }),
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    const message =
+      (body && (body.message || body.error)) ||
+      (await res.text()) ||
+      "Failed to send OTP";
+    throw new Error(message);
+  }
+
+  return res.json();
+}
+
+export async function verifyOtp(
+  email: string,
+  otp: string,
+): Promise<{ message: string; verified: boolean }> {
+  const res = await fetch(buildUrl("/auth/verify-otp"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, otp }),
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    const message =
+      (body && (body.message || body.error)) ||
+      (await res.text()) ||
+      "OTP verification failed";
+    throw new Error(message);
+  }
+
+  return res.json();
+}

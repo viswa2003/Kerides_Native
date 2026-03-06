@@ -3,6 +3,9 @@ import React, { useEffect, useRef, useState } from "react";
 import { Alert, Image, StyleSheet, View } from "react-native";
 import MapView, { Marker } from "react-native-maps";
 import arrow from "../../../assets/images/map_arrow.png";
+import IncomingRideModal, {
+  type IncomingRideRequest,
+} from "../../../src/components/home/IncomingRideModal";
 import SlideToGoOnline from "../../../src/components/home/SlideToGoOnline";
 
 type Coords = {
@@ -17,6 +20,31 @@ export default function DriverHomeTab() {
   const [location, setLocation] = useState<Coords | null>(null);
   const [heading, setHeading] = useState<number>(0);
   const [isOnline, setIsOnline] = useState(false);
+  const [incomingRequest, setIncomingRequest] =
+    useState<IncomingRideRequest | null>(null);
+
+  // TODO: replace with real WebSocket / push-notification listener
+  function simulateIncomingRequest() {
+    setIncomingRequest({
+      id: "req-001",
+      origin: "Ernakulam Junction, Kochi",
+      destination: "Cochin International Airport",
+      distanceKm: 28.4,
+      fareEstimate: 420,
+    });
+  }
+
+  function handleAccept(id: string) {
+    console.log("Accepted ride request:", id);
+    setIncomingRequest(null);
+    // TODO: navigate to active ride screen / call booking API
+  }
+
+  function handleReject(id: string) {
+    console.log("Rejected ride request:", id);
+    setIncomingRequest(null);
+    // TODO: notify backend of rejection
+  }
 
   useEffect(() => {
     let mounted = true;
@@ -100,9 +128,19 @@ export default function DriverHomeTab() {
       <View style={styles.sliderContainer}>
         <SlideToGoOnline
           isOnline={isOnline}
-          onToggle={(online) => setIsOnline(online)}
+          onToggle={(online) => {
+            setIsOnline(online);
+            // TODO: remove — only for manual testing of the modal
+            if (online) simulateIncomingRequest();
+          }}
         />
       </View>
+
+      <IncomingRideModal
+        request={incomingRequest}
+        onAccept={handleAccept}
+        onReject={handleReject}
+      />
     </View>
   );
 }

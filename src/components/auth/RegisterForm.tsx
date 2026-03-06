@@ -2,7 +2,7 @@ import { Feather } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import React, { useState } from "react";
 import { Alert, Linking, Pressable, Text, View } from "react-native";
-import { register, RegisterRequest, Role } from "../../api/auth";
+import { register, RegisterRequest, Role, sendOtp, verifyOtp } from "../../api/auth";
 import { useAuth } from "../../auth/AuthProvider";
 import Button from "../ui/Button";
 import Card from "../ui/Card";
@@ -21,6 +21,7 @@ function isStrongPassword(value: string) {
   return value.length >= 8;
 }
 
+
 function isValidPhoneNumber(value: string) {
   return /^[6-9]\d{9}$/.test(value);
 }
@@ -38,6 +39,11 @@ export default function RegisterForm({ role = "USER" }: Props) {
   const [showConfirm, setShowConfirm] = useState(false);
   const [acceptTerms, setAcceptTerms] = useState(false);
 
+  const [otpSent, setOtpSent] = useState(false);
+  const [otp, setOtp] = useState("");
+  const [emailVerified, setEmailVerified] = useState(false);
+  const [otpLoading, setOtpLoading] = useState(false);
+
   const [errors, setErrors] = useState<Record<string, string | null>>({});
   const [loading, setLoading] = useState(false);
 
@@ -45,6 +51,7 @@ export default function RegisterForm({ role = "USER" }: Props) {
     const e: typeof errors = {};
     if (!fullName.trim()) e.fullName = "Full name is required";
     if (!isEmail(email)) e.email = "Enter a valid email";
+    else if (!emailVerified) e.email = "Please verify your email with OTP first";
     if (!phoneNumber.trim()) e.phoneNumber = "Phone number is required";
     else if (!isValidPhoneNumber(phoneNumber.trim()))
       e.phoneNumber = "Enter a valid 10-digit phone number";
@@ -55,6 +62,47 @@ export default function RegisterForm({ role = "USER" }: Props) {
     if (!acceptTerms) e.terms = "You must accept the Terms of Service";
     setErrors(e);
     return Object.keys(e).length === 0;
+  }
+
+  async function onSendOtp() {
+    if (!isEmail(email)) {
+      setErrors((prev) => ({ ...prev, email: "Enter a valid email" }));
+      return;
+    }
+    setOtpLoading(true);
+    try {
+      await sendOtp(email.trim().toLowerCase());
+      setOtpSent(true);
+      setEmailVerified(false);
+      setOtp("");
+      setErrors((prev) => ({ ...prev, email: null, otp: null }));
+    } catch (err: any) {
+      Alert.alert("Failed to send OTP", err?.message || String(err));
+    } finally {
+      setOtpLoading(false);
+    }
+  }
+
+  async function onVerifyOtp() {
+    if (!otp.trim()) {
+      setErrors((prev) => ({ ...prev, otp: "Enter the OTP" }));
+      return;
+    }
+    setOtpLoading(true);
+    try {
+      const result = await verifyOtp(email.trim().toLowerCase(), otp.trim());
+      if (result.verified) {
+        setEmailVerified(true);
+        setOtpSent(false);
+        setErrors((prev) => ({ ...prev, email: null, otp: null }));
+      } else {
+        setErrors((prev) => ({ ...prev, otp: "Invalid OTP" }));
+      }
+    } catch (err: any) {
+      setErrors((prev) => ({ ...prev, otp: err?.message || "Verification failed" }));
+    } finally {
+      setOtpLoading(false);
+    }
   }
 
   async function onSubmit() {
@@ -104,15 +152,53 @@ export default function RegisterForm({ role = "USER" }: Props) {
         <TextField
           label="Email Address"
           value={email}
-          onChangeText={setEmail}
+          onChangeText={(val) => {
+            setEmail(val);
+            if (emailVerified || otpSent) {
+              setEmailVerified(false);
+              setOtpSent(false);
+              setOtp("");
+            }
+          }}
           placeholder="your@email.com"
           keyboardType="email-address"
           autoComplete="email"
           textContentType="emailAddress"
+          editable={!emailVerified}
           error={errors.email || null}
           leftIcon={<Feather name="mail" size={18} color="#6B7280" />}
+          rightIcon={
+            emailVerified ? (
+              <Feather name="check-circle" size={18} color="#16A34A" />
+            ) : (
+              <Pressable onPress={onSendOtp} disabled={otpLoading}>
+                <Text className="text-primary-600 font-medium text-sm">
+                  {otpLoading && !otpSent ? "Sending..." : otpSent ? "Resend" : "Verify"}
+                </Text>
+              </Pressable>
+            )
+          }
         />
       </View>
+
+      {otpSent && !emailVerified && (
+        <View className="mb-4">
+          <TextField
+            label="Verification Code"
+            value={otp}
+            onChangeText={setOtp}
+            placeholder="Enter 6-digit OTP"
+            keyboardType="number-pad"
+            error={errors.otp || null}
+            leftIcon={<Feather name="shield" size={18} color="#6B7280" />}
+          />
+          <View className="mt-2">
+            <Button onPress={onVerifyOtp} loading={otpLoading}>
+              Verify OTP
+            </Button>
+          </View>
+        </View>
+      )}
 
       <View className="mb-4">
         <TextField

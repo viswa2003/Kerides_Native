@@ -12,8 +12,10 @@ export default function DriverLayout() {
 
   if (isLoading) return null;
 
-  if (!token) return <Redirect href="/(auth)/driver/login" />;
-  if (role !== "DRIVER") return <Redirect href="/user/(tabs)/home" />;
+  // === TEMPORARY BYPASS: skip auth guard for testing ===
+  // if (!token) return <Redirect href="/(auth)/driver/login" />;
+  // if (role !== "DRIVER") return <Redirect href="/user/(tabs)/home" />;
+  // === END TEMPORARY BYPASS ===
 
   return <Stack screenOptions={{ headerShown: false }} />;
 }
