@@ -1,12 +1,22 @@
 import * as Location from "expo-location";
+import { useRouter } from "expo-router";
 import React, { useEffect, useRef, useState } from "react";
 import { Alert, Image, StyleSheet, View } from "react-native";
 import MapView, { Marker } from "react-native-maps";
 import arrow from "../../../assets/images/map_arrow.png";
+import {
+  acceptBooking,
+  rejectBooking,
+} from "../../../src/api/bookings";
+import {
+  updateDriverLocation,
+  updateOnlineStatus,
+} from "../../../src/api/driver-profile";
 import IncomingRideModal, {
   type IncomingRideRequest,
-} from "../../../src/components/home/IncomingRideModal";
-import SlideToGoOnline from "../../../src/components/home/SlideToGoOnline";
+} from "../../../src/components/home/driver/IncomingRideModal";
+import SlideToGoOnline from "../../../src/components/home/driver/SlideToGoOnline";
+import { useRideRequests } from "../../../src/hooks/useRideRequests";
 
 type Coords = {
   latitude: number;
@@ -14,36 +24,58 @@ type Coords = {
 };
 
 export default function DriverHomeTab() {
+  const router = useRouter();
   const mapRef = useRef<MapView | null>(null);
   const locationSubscription = useRef<Location.LocationSubscription | null>(null);
 
   const [location, setLocation] = useState<Coords | null>(null);
   const [heading, setHeading] = useState<number>(0);
   const [isOnline, setIsOnline] = useState(false);
+  const isOnlineRef = useRef(false);
   const [incomingRequest, setIncomingRequest] =
     useState<IncomingRideRequest | null>(null);
 
-  // TODO: replace with real WebSocket / push-notification listener
-  function simulateIncomingRequest() {
+  const { requests } = useRideRequests(isOnline);
+
+  // Show the first pending ride request when it arrives via SSE
+  useEffect(() => {
+    if (!isOnline || requests.length === 0) return;
+    const first = requests[0];
+    if (incomingRequest?.id === first._id) return;
+
     setIncomingRequest({
-      id: "req-001",
-      origin: "Ernakulam Junction, Kochi",
-      destination: "Cochin International Airport",
-      distanceKm: 28.4,
-      fareEstimate: 420,
+      id: first._id,
+      origin: first.booking?.origin?.address ?? "Unknown",
+      destination: first.booking?.destination?.address ?? "Unknown",
+      distanceKm: first.estimatedDistance ?? 0,
+      fareEstimate: first.booking?.fare,
     });
+  }, [requests, isOnline, incomingRequest?.id]);
+
+  async function handleAccept(id: string) {
+    setIncomingRequest(null);
+    try {
+      const req = requests.find((r) => r._id === id);
+      const bookingId = req?.bookingId ?? id;
+      await acceptBooking(bookingId);
+      router.push({
+        pathname: "/driver/active-ride",
+        params: { bookingId },
+      });
+    } catch (err: any) {
+      Alert.alert("Error", err.message ?? "Could not accept ride.");
+    }
   }
 
-  function handleAccept(id: string) {
-    console.log("Accepted ride request:", id);
+  async function handleReject(id: string) {
     setIncomingRequest(null);
-    // TODO: navigate to active ride screen / call booking API
-  }
-
-  function handleReject(id: string) {
-    console.log("Rejected ride request:", id);
-    setIncomingRequest(null);
-    // TODO: notify backend of rejection
+    try {
+      const req = requests.find((r) => r._id === id);
+      const bookingId = req?.bookingId ?? id;
+      await rejectBooking(bookingId);
+    } catch {
+      // silent
+    }
   }
 
   useEffect(() => {
@@ -76,6 +108,13 @@ export default function DriverHomeTab() {
 
           setLocation(coords);
           setHeading(loc.coords.heading ?? 0);
+
+          // Send location to backend when online
+          if (isOnlineRef.current) {
+            updateDriverLocation(coords.latitude, coords.longitude, true).catch(
+              () => {},
+            );
+          }
 
           mapRef.current?.animateCamera(
             {
@@ -128,10 +167,15 @@ export default function DriverHomeTab() {
       <View style={styles.sliderContainer}>
         <SlideToGoOnline
           isOnline={isOnline}
-          onToggle={(online) => {
-            setIsOnline(online);
-            // TODO: remove — only for manual testing of the modal
-            if (online) simulateIncomingRequest();
+          onToggle={async (online) => {
+            try {
+              await updateOnlineStatus(online);
+              setIsOnline(online);
+              isOnlineRef.current = online;
+              if (!online) setIncomingRequest(null);
+            } catch (err: any) {
+              Alert.alert("Error", err.message ?? "Could not update status.");
+            }
           }}
         />
       </View>

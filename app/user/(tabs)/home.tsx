@@ -12,9 +12,9 @@ import {
   fetchDirectionsAlternatives,
   type DirectionsRouteOption,
 } from "../../../src/api/directions";
-import RideRequestCard from "../../../src/components/home/RideRequestCard";
-import RouteEndpointsMarkers from "../../../src/components/home/RouteEndpointsMarkers";
-import type { VehicleType } from "../../../src/components/home/VehicleTypeSelector";
+import RideRequestCard from "../../../src/components/home/user/RideRequestCard";
+import RouteEndpointsMarkers from "../../../src/components/home/user/RouteEndpointsMarkers";
+import type { VehicleType } from "../../../src/components/home/user/VehicleTypeSelector";
 
 const { height: SCREEN_HEIGHT } = Dimensions.get("window");
 
@@ -259,12 +259,25 @@ export default function UserHomeTab() {
         loading={routesLoading}
         placesApiKey={directionsApiKey}
         routeSelected={selectedRouteIndex >= 0}
-        onProceed={(vehicle: VehicleType) =>
+        onProceed={(vehicle: VehicleType) => {
+          const route = routes[selectedRouteIndex];
+          const originCoord = route?.coordinates[0];
+          const destCoord = route?.coordinates[route.coordinates.length - 1];
           router.push({
             pathname: "/user/nearby-vehicles",
-            params: { vehicleType: vehicle.id },
-          })
-        }
+            params: {
+              vehicleType: vehicle.id,
+              originAddress: origin,
+              destinationAddress: destination,
+              originLat: originCoord?.latitude?.toString(),
+              originLng: originCoord?.longitude?.toString(),
+              destLat: destCoord?.latitude?.toString(),
+              destLng: destCoord?.longitude?.toString(),
+              distanceText: route?.distanceText,
+              durationText: route?.durationText,
+            },
+          });
+        }}
         cardHeightShared={cardHeight}
       />
     </View>

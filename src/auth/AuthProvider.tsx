@@ -60,10 +60,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     })();
   }, []);
 
-  const signIn = useCallback(async (token: string, role: Role) => {
-    await persistSession(token, role);
-    setState((prev) => ({ ...prev, token, role, lastRole: role }));
-  }, []);
+  const signIn = useCallback(
+    async (token: string, role: Role, refreshToken?: string) => {
+      await persistSession(token, role, refreshToken);
+      setState((prev) => ({ ...prev, token, role, lastRole: role }));
+    },
+    [],
+  );
 
   const signOut = useCallback(async () => {
     await clearPersistedSession();

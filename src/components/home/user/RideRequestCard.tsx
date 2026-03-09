@@ -8,8 +8,8 @@ import Animated, {
 } from "react-native-reanimated";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 
-import Button from "../ui/Button";
-import PlacesAutocompleteInput from "./PlacesAutocompleteInput";
+import Button from "../../ui/Button";
+import PlacesAutocompleteInput from "../../home/user/PlacesAutocompleteInput";
 import VehicleTypeSelector, {
   type VehicleType,
 } from "./VehicleTypeSelector";

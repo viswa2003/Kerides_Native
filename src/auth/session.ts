@@ -2,6 +2,7 @@ import * as SecureStore from "expo-secure-store";
 import { Role } from "../api/auth";
 
 const TOKEN_KEY = "auth_token";
+const REFRESH_TOKEN_KEY = "auth_refresh_token";
 const ROLE_KEY = "auth_role";
 const LAST_ROLE_KEY = "last_role";
 
@@ -13,6 +14,16 @@ export async function getToken(): Promise<string | null> {
 
 export async function setToken(token: string): Promise<void> {
   await SecureStore.setItemAsync(TOKEN_KEY, token);
+}
+
+/* ───────── Refresh Token ───────── */
+
+export async function getRefreshToken(): Promise<string | null> {
+  return SecureStore.getItemAsync(REFRESH_TOKEN_KEY);
+}
+
+export async function setRefreshToken(token: string): Promise<void> {
+  await SecureStore.setItemAsync(REFRESH_TOKEN_KEY, token);
 }
 
 /* ───────── Role ───────── */
@@ -37,13 +48,19 @@ export async function getLastRole(): Promise<Role | null> {
 
 /* ───────── Session helpers ───────── */
 
-export async function setSession(token: string, role: Role): Promise<void> {
+export async function setSession(
+  token: string,
+  role: Role,
+  refreshToken?: string,
+): Promise<void> {
   await setToken(token);
   await setRole(role);
+  if (refreshToken) await setRefreshToken(refreshToken);
 }
 
 export async function clearSession(): Promise<void> {
   await SecureStore.deleteItemAsync(TOKEN_KEY);
+  await SecureStore.deleteItemAsync(REFRESH_TOKEN_KEY);
   await SecureStore.deleteItemAsync(ROLE_KEY);
   // NOTE: lastRole is intentionally NOT cleared so we remember which login to show
 }

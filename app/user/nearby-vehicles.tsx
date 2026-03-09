@@ -1,53 +1,154 @@
 import { Feather } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import React from "react";
-import { FlatList, Pressable, Text, View } from "react-native";
+import React, { useCallback, useEffect, useState } from "react";
+import {
+  ActivityIndicator,
+  Alert,
+  FlatList,
+  Pressable,
+  RefreshControl,
+  Text,
+  View,
+} from "react-native";
+import {
+  createBooking,
+  findNearbyDrivers,
+  type CreateBookingRequest,
+  type NearbyDriver,
+} from "../../src/api/bookings";
 import NearbyVehicleCard, {
   type NearbyVehicle,
-} from "../../src/components/home/NearbyVehicleCard";
+} from "../../src/components/home/user/NearbyVehicleCard";
 
-// ── Temporary mock data ──────────────────────────────────────────────
-const MOCK_VEHICLES: Record<string, NearbyVehicle[]> = {
-  auto: [
-    { id: "a1", vehicleName: "Bajaj RE", driverName: "Raju K.", price: 85, photo: "https://i.imgur.com/8Km9tLL.png", rating: 4.5, eta: "3 min" },
-    { id: "a2", vehicleName: "Piaggio Ape", driverName: "Suresh M.", price: 90, photo: "https://i.imgur.com/8Km9tLL.png", rating: 4.2, eta: "5 min" },
-    { id: "a3", vehicleName: "Bajaj RE", driverName: "Vinod S.", price: 80, photo: "https://i.imgur.com/8Km9tLL.png", rating: 4.8, eta: "7 min" },
-  ],
-  bike: [
-    { id: "b1", vehicleName: "Honda Activa", driverName: "Anil P.", price: 45, photo: "https://i.imgur.com/8Km9tLL.png", rating: 4.6, eta: "2 min" },
-    { id: "b2", vehicleName: "TVS Jupiter", driverName: "Manoj R.", price: 50, photo: "https://i.imgur.com/8Km9tLL.png", rating: 4.3, eta: "4 min" },
-  ],
-  hatchback: [
-    { id: "h1", vehicleName: "Maruti Swift", driverName: "Ramesh T.", price: 150, photo: "https://i.imgur.com/8Km9tLL.png", rating: 4.7, eta: "4 min" },
-    { id: "h2", vehicleName: "Hyundai i20", driverName: "Krishna V.", price: 160, photo: "https://i.imgur.com/8Km9tLL.png", rating: 4.4, eta: "6 min" },
-    { id: "h3", vehicleName: "Tata Altroz", driverName: "Deepak J.", price: 145, photo: "https://i.imgur.com/8Km9tLL.png", rating: 4.9, eta: "8 min" },
-  ],
-  sedan: [
-    { id: "s1", vehicleName: "Honda City", driverName: "Ajay N.", price: 220, photo: "https://i.imgur.com/8Km9tLL.png", rating: 4.8, eta: "5 min" },
-    { id: "s2", vehicleName: "Hyundai Verna", driverName: "Sanjay D.", price: 210, photo: "https://i.imgur.com/8Km9tLL.png", rating: 4.5, eta: "7 min" },
-    { id: "s3", vehicleName: "Maruti Ciaz", driverName: "Prakash L.", price: 200, photo: "https://i.imgur.com/8Km9tLL.png", rating: 4.6, eta: "9 min" },
-  ],
-  suv: [
-    { id: "u1", vehicleName: "Toyota Innova", driverName: "Mohan B.", price: 350, photo: "https://i.imgur.com/8Km9tLL.png", rating: 4.9, eta: "6 min" },
-    { id: "u2", vehicleName: "Mahindra XUV700", driverName: "Ganesh H.", price: 330, photo: "https://i.imgur.com/8Km9tLL.png", rating: 4.7, eta: "8 min" },
-    { id: "u3", vehicleName: "Kia Seltos", driverName: "Naveen W.", price: 310, photo: "https://i.imgur.com/8Km9tLL.png", rating: 4.4, eta: "10 min" },
-  ],
+type RouteParams = {
+  vehicleType: string;
+  originAddress?: string;
+  destinationAddress?: string;
+  originLat?: string;
+  originLng?: string;
+  destLat?: string;
+  destLng?: string;
+  distanceText?: string;
+  durationText?: string;
 };
-// ─────────────────────────────────────────────────────────────────────
+
+function driverToVehicle(driver: NearbyDriver): NearbyVehicle {
+  const v = driver.vehicle;
+  return {
+    id: driver.accountId,
+    vehicleName: v ? `${v.make} ${v.vehicleModel}` : "Unknown",
+    driverName: driver.fullName,
+    price: 0,
+    photo: "",
+    rating: driver.rating,
+    eta: driver.estimatedArrival
+      ? `${Math.ceil(driver.estimatedArrival)} min`
+      : undefined,
+  };
+}
 
 export default function NearbyVehiclesScreen() {
   const router = useRouter();
-  const { vehicleType } = useLocalSearchParams<{ vehicleType: string }>();
+  const params = useLocalSearchParams<RouteParams>();
 
-  const vehicles = MOCK_VEHICLES[vehicleType ?? ""] ?? [];
-  const typeLabel = vehicleType
-    ? vehicleType.charAt(0).toUpperCase() + vehicleType.slice(1)
+  const [vehicles, setVehicles] = useState<NearbyVehicle[]>([]);
+  const [drivers, setDrivers] = useState<NearbyDriver[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [booking, setBooking] = useState(false);
+
+  const typeLabel = params.vehicleType
+    ? params.vehicleType.charAt(0).toUpperCase() + params.vehicleType.slice(1)
     : "Vehicles";
 
-  const handleSelect = (vehicle: NearbyVehicle) => {
-    // TODO: integrate with booking API
-    console.log("Selected vehicle:", vehicle);
+  const fetchDrivers = useCallback(async () => {
+    const lat = params.originLat ? Number(params.originLat) : undefined;
+    const lng = params.originLng ? Number(params.originLng) : undefined;
+
+    if (lat == null || lng == null) {
+      setLoading(false);
+      return;
+    }
+
+    try {
+      const res = await findNearbyDrivers(
+        lat,
+        lng,
+        undefined,
+        undefined,
+        params.vehicleType,
+      );
+      setDrivers(res.drivers);
+      setVehicles(res.drivers.map(driverToVehicle));
+    } catch {
+      // silent
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, [params.originLat, params.originLng, params.vehicleType]);
+
+  useEffect(() => {
+    fetchDrivers();
+  }, [fetchDrivers]);
+
+  const handleSelect = async (vehicle: NearbyVehicle) => {
+    const driver = drivers.find((d) => d.accountId === vehicle.id);
+    if (!driver) return;
+
+    const originLat = Number(params.originLat);
+    const originLng = Number(params.originLng);
+    const destLat = Number(params.destLat);
+    const destLng = Number(params.destLng);
+
+    if ([originLat, originLng, destLat, destLng].some(isNaN)) {
+      Alert.alert("Error", "Invalid route coordinates.");
+      return;
+    }
+
+    setBooking(true);
+    try {
+      const payload: CreateBookingRequest = {
+        origin: {
+          address: params.originAddress ?? "",
+          coordinates: { lat: originLat, lng: originLng },
+        },
+        destination: {
+          address: params.destinationAddress ?? "",
+          coordinates: { lat: destLat, lng: destLng },
+        },
+        distance: {
+          text: params.distanceText ?? "",
+          value: 0,
+        },
+        duration: {
+          text: params.durationText ?? "",
+          value: 0,
+        },
+        driverId: driver.accountId,
+        vehicleId: driver.vehicle?._id,
+        vehicleType: params.vehicleType,
+      };
+
+      const res = await createBooking(payload);
+      router.replace({
+        pathname: "/user/active-ride",
+        params: { bookingId: res.bookingId },
+      });
+    } catch (err: any) {
+      Alert.alert("Booking Failed", err.message ?? "Could not create booking.");
+    } finally {
+      setBooking(false);
+    }
   };
+
+  if (loading) {
+    return (
+      <View className="flex-1 bg-gray-50 items-center justify-center">
+        <ActivityIndicator size="large" color="#16A34A" />
+      </View>
+    );
+  }
 
   return (
     <View className="flex-1 bg-gray-50">
@@ -65,11 +166,22 @@ export default function NearbyVehiclesScreen() {
             Nearby {typeLabel}s
           </Text>
           <Text className="text-sm text-gray-500 mt-0.5">
-            {vehicles.length} {vehicles.length === 1 ? "vehicle" : "vehicles"}{" "}
-            found
+            {vehicles.length}{" "}
+            {vehicles.length === 1 ? "driver" : "drivers"} found
           </Text>
         </View>
       </View>
+
+      {booking && (
+        <View className="absolute inset-0 z-50 bg-black/30 items-center justify-center">
+          <View className="bg-white rounded-2xl px-8 py-6 items-center">
+            <ActivityIndicator size="large" color="#16A34A" />
+            <Text className="text-sm text-gray-600 mt-3">
+              Creating booking…
+            </Text>
+          </View>
+        </View>
+      )}
 
       {/* Vehicle list */}
       {vehicles.length > 0 ? (
@@ -77,6 +189,15 @@ export default function NearbyVehiclesScreen() {
           data={vehicles}
           keyExtractor={(item) => item.id}
           contentContainerStyle={{ padding: 16 }}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={() => {
+                setRefreshing(true);
+                fetchDrivers();
+              }}
+            />
+          }
           renderItem={({ item }) => (
             <NearbyVehicleCard vehicle={item} onSelect={handleSelect} />
           )}
@@ -85,10 +206,10 @@ export default function NearbyVehiclesScreen() {
         <View className="flex-1 items-center justify-center px-6">
           <Feather name="search" size={48} color="#D1D5DB" />
           <Text className="text-lg font-semibold text-gray-400 mt-4">
-            No nearby vehicles found
+            No nearby drivers found
           </Text>
           <Text className="text-sm text-gray-400 mt-1 text-center">
-            Try selecting a different vehicle type.
+            Try selecting a different vehicle type or try again later.
           </Text>
         </View>
       )}
