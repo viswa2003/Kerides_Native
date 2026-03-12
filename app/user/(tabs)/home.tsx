@@ -13,11 +13,7 @@ import {
   type DirectionsRouteOption,
 } from "../../../src/api/directions";
 import RideRequestCard from "../../../src/components/home/user/RideRequestCard";
-import NearbyVehiclesPanel, {
-  type NearbyVehiclesPanelParams,
-} from "../../../src/components/home/user/NearbyVehiclesPanel";
 import RouteEndpointsMarkers from "../../../src/components/home/user/RouteEndpointsMarkers";
-import type { VehicleType } from "../../../src/components/home/user/VehicleTypeSelector";
 
 const { height: SCREEN_HEIGHT } = Dimensions.get("window");
 
@@ -52,8 +48,6 @@ export default function UserHomeTab() {
   const [selectedRouteIndex, setSelectedRouteIndex] = useState(-1);
   const [routesLoading, setRoutesLoading] = useState(false);
   const [selectPulse, setSelectPulse] = useState(false);
-  const [nearbyPanelParams, setNearbyPanelParams] =
-    useState<NearbyVehiclesPanelParams | null>(null);
 
   const [region, setRegion] = useState({
     latitude: 9.9312,
@@ -271,12 +265,12 @@ export default function UserHomeTab() {
         loading={routesLoading}
         placesApiKey={directionsApiKey}
         routeSelected={selectedRouteIndex >= 0}
-        onProceed={(vehicle: VehicleType) => {
+        onProceed={(vehicle) => {
           const route = routes[selectedRouteIndex];
           const originCoord = route?.coordinates[0];
           const destCoord = route?.coordinates[route.coordinates.length - 1];
-          if (!originCoord || !destCoord) return;
-          setNearbyPanelParams({
+          if (!originCoord || !destCoord) return null;
+          return {
             vehicleType: vehicle.id,
             originAddress: origin,
             destinationAddress: destination,
@@ -286,24 +280,16 @@ export default function UserHomeTab() {
             destLng: destCoord.longitude,
             distanceText: route?.distanceText ?? "",
             durationText: route?.durationText ?? "",
+          };
+        }}
+        onBookingCreated={(bookingId: string) => {
+          router.replace({
+            pathname: "/user/active-ride",
+            params: { bookingId },
           });
         }}
         cardHeightShared={cardHeight}
       />
-
-      {nearbyPanelParams && (
-        <NearbyVehiclesPanel
-          params={nearbyPanelParams}
-          onDismiss={() => setNearbyPanelParams(null)}
-          onBookingCreated={(bookingId) => {
-            setNearbyPanelParams(null);
-            router.replace({
-              pathname: "/user/active-ride",
-              params: { bookingId },
-            });
-          }}
-        />
-      )}
     </View>
   );
 }
