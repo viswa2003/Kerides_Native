@@ -9,7 +9,8 @@ import {
   TextInput,
   View,
 } from "react-native";
-import MapView, { Marker } from "react-native-maps";
+
+import MapSection from "../../src/components/MapSection";
 import {
   getBookingById,
   updateBookingStatus,
@@ -105,42 +106,8 @@ export default function DriverActiveRideScreen() {
 
   return (
     <View className="flex-1 bg-white">
-      {/* Map */}
-      <View className="h-[35%]">
-        <MapView
-          style={{ flex: 1 }}
-          initialRegion={{
-            latitude: originCoords?.lat ?? 9.9312,
-            longitude: originCoords?.lng ?? 76.2673,
-            latitudeDelta: 0.05,
-            longitudeDelta: 0.05,
-          }}
-          showsUserLocation
-        >
-          {originCoords && (
-            <Marker
-              coordinate={{ latitude: originCoords.lat, longitude: originCoords.lng }}
-              title="Pickup"
-              pinColor="green"
-            />
-          )}
-          {destCoords && (
-            <Marker
-              coordinate={{ latitude: destCoords.lat, longitude: destCoords.lng }}
-              title="Drop-off"
-              pinColor="red"
-            />
-          )}
-        </MapView>
-
-        <Pressable
-          onPress={() => router.back()}
-          className="absolute top-14 left-4 bg-white rounded-full p-2 shadow"
-          style={{ elevation: 3 }}
-        >
-          <Feather name="arrow-left" size={22} color="#111827" />
-        </Pressable>
-      </View>
+      {/* Map section (native-only) */}
+      <MapSection originCoords={originCoords} destCoords={destCoords} />
 
       {/* Ride info */}
       <View className="flex-1 bg-white rounded-t-3xl -mt-6 px-6 pt-6 pb-8">

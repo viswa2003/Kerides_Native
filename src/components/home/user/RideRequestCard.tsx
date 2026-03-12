@@ -59,11 +59,13 @@ export default function RideRequestCard({
     animatedHeight.value = withSpring(target, {
       damping: 15,
       stiffness: 120,
+      overshootClamping: true,
     });
     if (cardHeightShared) {
       cardHeightShared.value = withSpring(target, {
         damping: 15,
         stiffness: 120,
+        overshootClamping: true,
       });
     }
   };
@@ -74,11 +76,13 @@ export default function RideRequestCard({
     animatedHeight.value = withSpring(target, {
       damping: 15,
       stiffness: 120,
+      overshootClamping: true,
     });
     if (cardHeightShared) {
       cardHeightShared.value = withSpring(target, {
         damping: 15,
         stiffness: 120,
+        overshootClamping: true,
       });
     }
   };
@@ -146,12 +150,14 @@ export default function RideRequestCard({
       animatedHeight.value = withSpring(targetHeight, {
         damping: 15,
         stiffness: 120,
+        overshootClamping: true,
       });
 
       if (cardHeightShared) {
         cardHeightShared.value = withSpring(targetHeight, {
           damping: 15,
           stiffness: 120,
+          overshootClamping: true,
         });
       }
     });
@@ -170,12 +176,14 @@ export default function RideRequestCard({
     animatedHeight.value = withSpring(targetHeight, {
       damping: 15,
       stiffness: 120,
+      overshootClamping: true,
     });
 
     if (cardHeightShared) {
       cardHeightShared.value = withSpring(targetHeight, {
         damping: 15,
         stiffness: 120,
+        overshootClamping: true,
       });
     }
   }, [routeSelected, animatedHeight, cardHeightShared]);

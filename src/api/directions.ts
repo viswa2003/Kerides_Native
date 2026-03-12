@@ -56,6 +56,10 @@ export async function fetchDirectionsAlternatives(opts: {
   const res = await fetch(url);
   const data = (await res.json()) as DirectionsApiResponse;
 
+  // debug: log the full request and response for troubleshooting ZERO_RESULTS
+  console.log("directions url:", url);
+  console.log("directions response:", data);
+
   if (!res.ok) {
     throw new Error(
       data?.error_message || `Directions request failed (${res.status})`,

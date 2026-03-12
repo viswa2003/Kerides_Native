@@ -68,14 +68,20 @@ export async function request<T = unknown>(opts: RequestOptions): Promise<T> {
     ...(authenticated ? await authHeaders() : {}),
   };
 
+  // debug: log outgoing request details
+  console.log("API request", { service, method, url, query, body, authenticated });
+
   const res = await fetch(url, {
     method,
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
 
+  console.log("API response status", res.status, "for", method, url);
+
   if (!res.ok) {
     const message = await parseError(res);
+    console.warn("API request failed", { service, method, url, status: res.status, message });
     throw new Error(message);
   }
 

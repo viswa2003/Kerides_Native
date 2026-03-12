@@ -13,6 +13,9 @@ import {
   type DirectionsRouteOption,
 } from "../../../src/api/directions";
 import RideRequestCard from "../../../src/components/home/user/RideRequestCard";
+import NearbyVehiclesPanel, {
+  type NearbyVehiclesPanelParams,
+} from "../../../src/components/home/user/NearbyVehiclesPanel";
 import RouteEndpointsMarkers from "../../../src/components/home/user/RouteEndpointsMarkers";
 import type { VehicleType } from "../../../src/components/home/user/VehicleTypeSelector";
 
@@ -37,11 +40,20 @@ export default function UserHomeTab() {
   const [currentLocation, setCurrentLocation] = useState<Coords>(null);
   const [originIsCurrentLocation, setOriginIsCurrentLocation] = useState(false);
 
+  // wrapper for origin changes triggered by user input/selection
+  // clears the "use current location" flag so we don't send coords
+  const handleOriginChange = (text: string) => {
+    setOrigin(text);
+    setOriginIsCurrentLocation(false);
+  };
+
   const [routes, setRoutes] = useState<DirectionsRouteOption[]>([]);
   const [highlightedRouteIndex, setHighlightedRouteIndex] = useState(-1);
   const [selectedRouteIndex, setSelectedRouteIndex] = useState(-1);
   const [routesLoading, setRoutesLoading] = useState(false);
   const [selectPulse, setSelectPulse] = useState(false);
+  const [nearbyPanelParams, setNearbyPanelParams] =
+    useState<NearbyVehiclesPanelParams | null>(null);
 
   const [region, setRegion] = useState({
     latitude: 9.9312,
@@ -252,7 +264,7 @@ export default function UserHomeTab() {
       <RideRequestCard
         origin={origin}
         destination={destination}
-        setOrigin={setOrigin}
+        setOrigin={handleOriginChange}
         setDestination={setDestination}
         onSetCurrentLocation={handleSetCurrentLocation}
         onDestinationSelected={handleConfirm}
@@ -263,23 +275,35 @@ export default function UserHomeTab() {
           const route = routes[selectedRouteIndex];
           const originCoord = route?.coordinates[0];
           const destCoord = route?.coordinates[route.coordinates.length - 1];
-          router.push({
-            pathname: "/user/nearby-vehicles",
-            params: {
-              vehicleType: vehicle.id,
-              originAddress: origin,
-              destinationAddress: destination,
-              originLat: originCoord?.latitude?.toString(),
-              originLng: originCoord?.longitude?.toString(),
-              destLat: destCoord?.latitude?.toString(),
-              destLng: destCoord?.longitude?.toString(),
-              distanceText: route?.distanceText,
-              durationText: route?.durationText,
-            },
+          if (!originCoord || !destCoord) return;
+          setNearbyPanelParams({
+            vehicleType: vehicle.id,
+            originAddress: origin,
+            destinationAddress: destination,
+            originLat: originCoord.latitude,
+            originLng: originCoord.longitude,
+            destLat: destCoord.latitude,
+            destLng: destCoord.longitude,
+            distanceText: route?.distanceText ?? "",
+            durationText: route?.durationText ?? "",
           });
         }}
         cardHeightShared={cardHeight}
       />
+
+      {nearbyPanelParams && (
+        <NearbyVehiclesPanel
+          params={nearbyPanelParams}
+          onDismiss={() => setNearbyPanelParams(null)}
+          onBookingCreated={(bookingId) => {
+            setNearbyPanelParams(null);
+            router.replace({
+              pathname: "/user/active-ride",
+              params: { bookingId },
+            });
+          }}
+        />
+      )}
     </View>
   );
 }

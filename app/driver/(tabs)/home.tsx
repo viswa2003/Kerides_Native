@@ -1,8 +1,9 @@
 import * as Location from "expo-location";
 import { useRouter } from "expo-router";
 import React, { useEffect, useRef, useState } from "react";
-import { Alert, Image, StyleSheet, View } from "react-native";
+import { Alert, Image, Pressable, StyleSheet, View } from "react-native";
 import MapView, { Marker } from "react-native-maps";
+import { MaterialCommunityIcons } from "@expo/vector-icons";
 import arrow from "../../../assets/images/map_arrow.png";
 import {
   acceptBooking,
@@ -164,6 +165,19 @@ export default function DriverHomeTab() {
         )}
       </MapView>
 
+      {/* Bookings button */}
+      <Pressable
+        onPress={() => router.push("/driver/bookings")}
+        style={styles.bookingsButton}
+        className="bg-white rounded-full items-center justify-center"
+      >
+        <MaterialCommunityIcons
+          name="clipboard-list-outline"
+          size={22}
+          color="#374151"
+        />
+      </Pressable>
+
       <View style={styles.sliderContainer}>
         <SlideToGoOnline
           isOnline={isOnline}
@@ -190,6 +204,18 @@ export default function DriverHomeTab() {
 }
 
 const styles = StyleSheet.create({
+  bookingsButton: {
+    position: "absolute",
+    top: 56,
+    right: 16,
+    width: 44,
+    height: 44,
+    elevation: 4,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+  },
   sliderContainer: {
     position: "absolute",
     left: 0,
